@@ -1453,15 +1453,46 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         return None
 
     def record_macro_activity(self):
-        self.log("Macro recording will start in 1 second. Minimizing window...", "#ff453a")
-        self.log("ESC key will STOP recording. Please perform your keyboard & mouse actions.", self.accent_purple)
+        # Stop global keyboard hotkey listener to prevent hook conflicts/crashes
+        if hasattr(self, 'keyboard_listener') and self.keyboard_listener:
+            try:
+                self.keyboard_listener.stop()
+            except:
+                pass
+            self.keyboard_listener = None
+            self.log("Suspended global hotkey listener for recording safety.", self.accent_purple)
+
+        # Create overlay window
+        overlay = tk.Toplevel(self)
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        
+        # Center at top of screen
+        screen_width = self.winfo_screenwidth()
+        x_pos = (screen_width - 340) // 2
+        overlay.geometry(f"340x35+{x_pos}+5")
+        
+        overlay.configure(bg="#0c0e12")
+        frame = tk.Frame(overlay, bg="#ffd60a", bd=1)  # Yellow border initially
+        frame.pack(fill="both", expand=True)
+        
+        lbl = tk.Label(frame, text="Preparing to record...", fg="#ffd60a", bg="#0c0e12", font=("Helvetica", 11, "bold"))
+        lbl.pack(fill="both", expand=True)
         
         def start_listening():
-            # Wait 1s
-            time.sleep(1.0)
+            # 3 Seconds countdown
+            for i in range(3, 0, -1):
+                self.after(0, lambda val=i: lbl.configure(text=f"Recording starts in {val}..."))
+                time.sleep(1.0)
             
-            # Hide app window
+            # Hide main app window
             self.after(0, self.withdraw)
+            
+            # Change overlay style to active recording (Red)
+            self.after(0, lambda: [
+                frame.configure(bg="#ff453a"),
+                lbl.configure(text="🔴 Recording... Press [ESC] to Stop & Save", fg="#ff453a")
+            ])
             
             self.recorded_events = []
             self.currently_pressed_keys = set()
@@ -1524,8 +1555,12 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
             # Stop mouse listener
             self.macro_mouse_listener.stop()
             
-            # Restore window on main thread
+            # Destroy overlay and restore window on main thread
+            self.after(0, overlay.destroy)
             self.after(0, self.deiconify)
+            
+            # Restart global keyboard hotkey listener
+            self.after(0, self.restart_global_hotkey_listener)
             
             # Remove trailing ESC key press from events
             while self.recorded_events and self.recorded_events[-1].get('type') in ('key_down', 'key_up') and self.recorded_events[-1].get('key') == "special:esc":
@@ -1538,6 +1573,19 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.after(0, lambda: self.log("Recording cancelled: No events captured.", "#ff9500"))
 
         threading.Thread(target=start_listening, daemon=True).start()
+
+    def restart_global_hotkey_listener(self):
+        if hasattr(self, 'keyboard_listener') and self.keyboard_listener:
+            try:
+                self.keyboard_listener.stop()
+            except:
+                pass
+        self.keyboard_listener = pynput_keyboard.Listener(
+            on_press=self.global_on_press,
+            on_release=self.global_on_release
+        )
+        self.keyboard_listener.start()
+        self.log("Restored global hotkey listener.", self.accent_green)
 
     def clear_inspector_macro_timeline(self):
         self.clear_timeline_widgets_only()
