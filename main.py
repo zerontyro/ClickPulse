@@ -20,6 +20,51 @@ try:
 except ImportError:
     OPENCV_AVAILABLE = False
 
+# Win32 Drag and Drop imports & setup
+import ctypes
+from ctypes import wintypes
+
+GWL_WNDPROC = -4
+WM_DROPFILES = 0x0233
+
+DragQueryFile = ctypes.windll.shell32.DragQueryFileW
+DragQueryFile.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.DWORD]
+DragQueryFile.restype = wintypes.UINT
+
+DragFinish = ctypes.windll.shell32.DragFinish
+DragFinish.argtypes = [wintypes.HANDLE]
+DragFinish.restype = None
+
+DragAcceptFiles = ctypes.windll.shell32.DragAcceptFiles
+DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
+DragAcceptFiles.restype = None
+
+CallWindowProc = ctypes.windll.user32.CallWindowProcW
+CallWindowProc.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+CallWindowProc.restype = ctypes.c_void_p
+
+try:
+    SetWindowLongPtr = ctypes.windll.user32.SetWindowLongPtrW
+    SetWindowLongPtr.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+    SetWindowLongPtr.restype = ctypes.c_void_p
+    
+    GetWindowLongPtr = ctypes.windll.user32.GetWindowLongPtrW
+    GetWindowLongPtr.argtypes = [wintypes.HWND, ctypes.c_int]
+    GetWindowLongPtr.restype = ctypes.c_void_p
+except AttributeError:
+    # 32-bit fallback
+    SetWindowLongPtr = ctypes.windll.user32.SetWindowLongW
+    SetWindowLongPtr.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LPARAM]
+    SetWindowLongPtr.restype = wintypes.LPARAM
+    
+    GetWindowLongPtr = ctypes.windll.user32.GetWindowLongW
+    GetWindowLongPtr.argtypes = [wintypes.HWND, ctypes.c_int]
+    GetWindowLongPtr.restype = wintypes.LPARAM
+
+# WNDPROC prototype
+WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+
+
 # Set default appearance
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -259,6 +304,7 @@ class ClickPulseApp(ctk.CTk):
         self.accent_green = "#00ff88"
         self.accent_purple = "#bf5af2"
         self.accent_orange = "#ff9500"
+        self.accent_pink = "#ff5efb"
         self.text_white = "#ffffff"
         self.text_gray = "#8b949e"
         
@@ -302,60 +348,104 @@ class ClickPulseApp(ctk.CTk):
         self.keyboard_listener.start()
         
         self.log("Virtual Control Deck ready.")
+        self.after(100, self.enable_drag_and_drop)
 
     def load_board_data(self):
-        self.board_slots = []
+        self.board_pages = []
         loaded = False
         if os.path.exists(self.board_file):
             try:
                 with open(self.board_file, "r") as f:
                     data = json.load(f)
-                    for r in range(4):
-                        row_data = []
-                        for c in range(8):
-                            slot = data[r][c]
-                            slot['hotkey'] = set(slot['hotkey'])
-                            if 'steps' not in slot:
-                                slot['steps'] = []
-                            row_data.append(slot)
-                        self.board_slots.append(row_data)
-                    loaded = True
+                    
+                    # Check if data is version 2 format (dict with pages)
+                    if isinstance(data, dict) and "pages" in data:
+                        pages_data = data["pages"]
+                        for page_data in pages_data:
+                            page_slots = []
+                            for r in range(4):
+                                row_data = []
+                                for c in range(8):
+                                    slot = page_data[r][c]
+                                    slot['hotkey'] = set(slot['hotkey'])
+                                    if 'steps' not in slot:
+                                        slot['steps'] = []
+                                    row_data.append(slot)
+                                page_slots.append(row_data)
+                            self.board_pages.append(page_slots)
+                        loaded = True
+                    # If it's a version 1 format (just a list of list of slots - a single page)
+                    elif isinstance(data, list):
+                        page_slots = []
+                        for r in range(4):
+                            row_data = []
+                            for c in range(8):
+                                slot = data[r][c]
+                                slot['hotkey'] = set(slot['hotkey'])
+                                if 'steps' not in slot:
+                                    slot['steps'] = []
+                                row_data.append(slot)
+                            page_slots.append(row_data)
+                        self.board_pages.append(page_slots)
+                        # Add 4 more empty pages
+                        for _ in range(4):
+                            self.board_pages.append(self.create_empty_page_slots())
+                        loaded = True
             except Exception as e:
                 pass
                 
         if not loaded:
-            for r in range(4):
-                row_data = []
-                for c in range(8):
-                    row_data.append({
-                        'type': 'empty',
-                        'title': '',
-                        'hotkey': set(),
-                        'app_path': '',
-                        'mouse_x': 1000,
-                        'mouse_y': 850,
-                        'click_type': 'Left Click',
-                        'glide_enabled': True,
-                        'glide_duration': 0.1,
-                        'steps': []
-                    })
-                self.board_slots.append(row_data)
+            # Create 5 empty pages
+            for _ in range(5):
+                self.board_pages.append(self.create_empty_page_slots())
             self.save_board_data()
+            
+        self.current_page = 0
+        self.board_slots = self.board_pages[self.current_page]
 
-    def save_board_data(self):
-        serializable = []
+    def create_empty_page_slots(self):
+        page_slots = []
         for r in range(4):
             row_data = []
             for c in range(8):
-                slot = self.board_slots[r][c]
-                slot_copy = slot.copy()
-                slot_copy['hotkey'] = list(slot['hotkey'])
-                row_data.append(slot_copy)
-            serializable.append(row_data)
+                row_data.append({
+                    'type': 'empty',
+                    'title': '',
+                    'hotkey': set(),
+                    'app_path': '',
+                    'web_url': '',
+                    'mouse_x': 1000,
+                    'mouse_y': 850,
+                    'click_type': 'Left Click',
+                    'glide_enabled': True,
+                    'glide_duration': 0.1,
+                    'steps': []
+                })
+            page_slots.append(row_data)
+        return page_slots
+
+    def save_board_data(self):
+        pages_serializable = []
+        for page in self.board_pages:
+            page_serializable = []
+            for r in range(4):
+                row_data = []
+                for c in range(8):
+                    slot = page[r][c]
+                    slot_copy = slot.copy()
+                    slot_copy['hotkey'] = list(slot['hotkey'])
+                    row_data.append(slot_copy)
+                page_serializable.append(row_data)
+            pages_serializable.append(page_serializable)
             
+        data = {
+            "version": 2,
+            "pages": pages_serializable
+        }
+        
         try:
             with open(self.board_file, "w") as f:
-                json.dump(serializable, f, indent=4)
+                json.dump(data, f, indent=4)
         except Exception as e:
             self.log(f"Error saving board settings: {str(e)}", "#ff453a")
 
@@ -369,6 +459,27 @@ class ClickPulseApp(ctk.CTk):
         
         profile_lbl = ctk.CTkLabel(header_frame, text="Default Profile v", text_color=self.text_gray, font=("Helvetica", 12))
         profile_lbl.pack(side="left", padx=15)
+
+        # Page Controls
+        self.page_controls_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
+        self.page_controls_frame.pack(side="right")
+        
+        self.btn_prev_page = ctk.CTkButton(
+            self.page_controls_frame, text="◀", fg_color="#1c212e", hover_color="#2b3240", border_color="#30363d", border_width=1,
+            text_color=self.accent_cyan, font=("Helvetica", 12, "bold"), width=30, height=26, corner_radius=6,
+            command=self.prev_page
+        )
+        self.btn_prev_page.pack(side="left", padx=5)
+        
+        self.page_lbl = ctk.CTkLabel(self.page_controls_frame, text="PAGE 1 / 5", text_color=self.text_white, font=("Helvetica", 11, "bold"))
+        self.page_lbl.pack(side="left", padx=10)
+        
+        self.btn_next_page = ctk.CTkButton(
+            self.page_controls_frame, text="▶", fg_color="#1c212e", hover_color="#2b3240", border_color="#30363d", border_width=1,
+            text_color=self.accent_cyan, font=("Helvetica", 12, "bold"), width=30, height=26, corner_radius=6,
+            command=self.next_page
+        )
+        self.btn_next_page.pack(side="left", padx=5)
 
         # 2. Main Middle Split
         middle_split = ctk.CTkFrame(self, fg_color="transparent")
@@ -433,6 +544,9 @@ class ClickPulseApp(ctk.CTk):
         self.btn_tb_app = ctk.CTkButton(self.toolbox_panel, text="Launch Application", fg_color="#182d24", hover_color="#224033", text_color=self.accent_green, font=("Helvetica", 12, "bold"), height=34, command=lambda: self.assign_action_to_selected("app"))
         self.btn_tb_app.pack(fill="x", padx=15, pady=6)
 
+        self.btn_tb_web = ctk.CTkButton(self.toolbox_panel, text="Launch Website", fg_color="#2c1a30", hover_color="#3d2442", text_color=self.accent_pink, font=("Helvetica", 12, "bold"), height=34, command=lambda: self.assign_action_to_selected("web"))
+        self.btn_tb_web.pack(fill="x", padx=15, pady=6)
+
         self.btn_tb_click = ctk.CTkButton(self.toolbox_panel, text="Mouse Clicker", fg_color="#1a2536", hover_color="#24344d", text_color=self.accent_cyan, font=("Helvetica", 12, "bold"), height=34, command=lambda: self.assign_action_to_selected("mouse"))
         self.btn_tb_click.pack(fill="x", padx=15, pady=6)
 
@@ -459,6 +573,156 @@ class ClickPulseApp(ctk.CTk):
         self.log_text.pack(fill="both", expand=True, pady=(5, 0))
         self.log_text.configure(state="disabled")
 
+    # --- Win32 Drag & Drop Methods ---
+
+    def enable_drag_and_drop(self):
+        try:
+            hwnd = self.winfo_id()
+            DragAcceptFiles(hwnd, True)
+            
+            # Store the original wndproc
+            self._old_wndproc = GetWindowLongPtr(hwnd, GWL_WNDPROC)
+            
+            # Define our new wndproc
+            def new_wndproc(hwnd_val, msg, wParam, lParam):
+                if msg == WM_DROPFILES:
+                    hDrop = wParam
+                    files = []
+                    num_files = DragQueryFile(hDrop, 0xFFFFFFFF, None, 0)
+                    for i in range(num_files):
+                        length = DragQueryFile(hDrop, i, None, 0)
+                        buf = ctypes.create_unicode_buffer(length + 1)
+                        DragQueryFile(hDrop, i, buf, length + 1)
+                        files.append(buf.value)
+                    DragFinish(hDrop)
+                    
+                    if files:
+                        self.after(0, lambda: self.on_files_dropped(files))
+                    return 0
+                return CallWindowProc(self._old_wndproc, hwnd_val, msg, wParam, lParam)
+                
+            self._wndproc_ctypes = WNDPROC(new_wndproc)
+            SetWindowLongPtr(hwnd, GWL_WNDPROC, self._wndproc_ctypes)
+            self.log("Drag-and-Drop enabled for files & folders.")
+        except Exception as e:
+            self.log(f"Drag-and-Drop initialization failed: {e}", "#ff9500")
+
+    def on_files_dropped(self, files):
+        r, c = self.selected_row, self.selected_col
+        if r is None or c is None:
+            r, c = 0, 0
+            self.on_grid_button_clicked(0, 0)
+            
+        if not files:
+            return
+            
+        # Parse first dropped file/folder path
+        path = files[0]
+        basename = os.path.basename(path)
+        title, ext = os.path.splitext(basename)
+        if not title:
+            title = basename
+            
+        title = title.capitalize()
+        
+        slot = self.board_slots[r][c]
+        slot['type'] = 'app'
+        slot['title'] = title
+        slot['app_path'] = path
+        
+        # Refresh grid button text and border
+        self.grid_buttons[r][c].configure(text=title, border_color=self.accent_green)
+        
+        # Reload current slot to inspector and save settings
+        self.load_slot_to_inspector(r, c)
+        self.save_board_data()
+        
+        self.log(f"Dropped File: Assigned Launch App -> {title} ({path})", self.accent_green)
+
+    def create_bat_file_for_selected_slot(self):
+        r, c = self.selected_row, self.selected_col
+        if r is None or c is None:
+            return
+            
+        slot = self.board_slots[r][c]
+        slot_type = slot['type']
+        
+        if slot_type == 'empty':
+            self.log("Cannot export .bat file for an empty slot.", "#ff9500")
+            return
+            
+        default_name = f"{slot['title'] or slot_type}.bat"
+        # Sanitize filename
+        import re
+        default_name = re.sub(r'[\/*?:"<>|]', '', default_name)
+        
+        save_path = filedialog.asksaveasfilename(
+            initialfile=default_name,
+            filetypes=[("Batch Files", "*.bat")],
+            title="Save Exported Batch File"
+        )
+        
+        if not save_path:
+            return
+            
+        project_dir = os.path.dirname(self.board_file)
+        
+        content = ""
+        if slot_type == 'app':
+            app_path = slot.get('app_path', '')
+            content = f'@echo off\n:: ClickPulse Export - Launch Application\nstart "" "{app_path}"\n'
+            
+        elif slot_type == 'web':
+            web_url = slot.get('web_url', '')
+            content = f'@echo off\n:: ClickPulse Export - Launch Website\nstart "" "{web_url}"\n'
+            
+        elif slot_type == 'mouse':
+            x = slot.get('mouse_x', 1000)
+            y = slot.get('mouse_y', 850)
+            click_type = slot.get('click_type', 'Left Click')
+            
+            click_cmd = ""
+            if click_type == "Left Click":
+                click_cmd = "$sys::mouse_event(0x0002, 0, 0, 0, 0); Start-Sleep -m 50; $sys::mouse_event(0x0004, 0, 0, 0, 0);"
+            elif click_type == "Double Left Click":
+                click_cmd = "$sys::mouse_event(0x0002, 0, 0, 0, 0); Start-Sleep -m 50; $sys::mouse_event(0x0004, 0, 0, 0, 0); Start-Sleep -m 100; $sys::mouse_event(0x0002, 0, 0, 0, 0); Start-Sleep -m 50; $sys::mouse_event(0x0004, 0, 0, 0, 0);"
+            elif click_type == "Right Click":
+                click_cmd = "$sys::mouse_event(0x0008, 0, 0, 0, 0); Start-Sleep -m 50; $sys::mouse_event(0x0010, 0, 0, 0, 0);"
+            elif click_type == "Middle Click":
+                click_cmd = "$sys::mouse_event(0x0020, 0, 0, 0, 0); Start-Sleep -m 50; $sys::mouse_event(0x0040, 0, 0, 0, 0);"
+                
+            content = (
+                f'@echo off\n'
+                f':: ClickPulse Export - Mouse Clicker\n'
+                f'powershell -NoProfile -ExecutionPolicy Bypass -Command ^\n'
+                f'  "[void][System.Reflection.Assembly]::LoadWithPartialName(\'System.Windows.Forms\');" ^\n'
+                f'  "[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point({x}, {y});" ^\n'
+                f'  "$api = \'[DllImport(\\"user32.dll\\")] public static extern void mouse_event(int flags, int dx, int dy, int data, int extraInfo);\';" ^\n'
+                f'  "$sys = Add-Type -MemberDefinition $api -Name \'Win32Mouse\' -Namespace \'Win32\' -PassThru;" ^\n'
+                f'  "{click_cmd}"\n'
+            )
+            
+        else: # macro or image
+            content = (
+                f'@echo off\n'
+                f':: ClickPulse Export - Trigger Headless CLI\n'
+                f'cd /d "{project_dir}"\n'
+                f'if exist "ClickPulse.exe" (\n'
+                f'    start "" "ClickPulse.exe" --run-slot P{self.current_page+1}_R{r+1}_C{c+1}\n'
+                f') else if exist "dist\\ClickPulse.exe" (\n'
+                f'    start "" "dist\\ClickPulse.exe" --run-slot P{self.current_page+1}_R{r+1}_C{c+1}\n'
+                f') else (\n'
+                f'    start "" ".venv\\Scripts\\pythonw.exe" "main.py" --run-slot P{self.current_page+1}_R{r+1}_C{c+1}\n'
+                f')\n'
+            )
+            
+        try:
+            with open(save_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            self.log(f"Successfully exported .bat file to: {save_path}", self.accent_green)
+        except Exception as e:
+            self.log(f"Failed to export .bat file: {str(e)}", "#ff453a")
+
     def build_inspector_header(self):
         """Creates the shared configuration headers inside property inspector."""
         header = ctk.CTkFrame(self.inspector_panel, fg_color="transparent")
@@ -476,7 +740,7 @@ class ClickPulseApp(ctk.CTk):
         type_lbl.pack(side="left", padx=(0, 4))
         self.inspector_type_combo = ctk.CTkOptionMenu(
             header,
-            values=["Empty", "Launch App", "Mouse Click", "Click at Image", "Macro Sequence"],
+            values=["Empty", "Launch App", "Launch Website", "Mouse Click", "Click at Image", "Macro Sequence"],
             fg_color="#0a0c10", button_color="#1f242e", button_hover_color="#282f3d", text_color=self.text_white,
             dropdown_fg_color="#12161f", font=("Helvetica", 11), width=130, height=26,
             command=self.on_inspector_type_changed
@@ -504,6 +768,14 @@ class ClickPulseApp(ctk.CTk):
         )
         self.inspector_test_btn.pack(side="right")
 
+        # Export BAT button
+        self.inspector_bat_btn = ctk.CTkButton(
+            header, text="Export BAT", fg_color="#1f242e", hover_color="#2b3240", border_color=self.accent_green, border_width=1,
+            text_color=self.accent_green, font=("Helvetica", 11, "bold"), width=75, height=26, corner_radius=6,
+            command=self.create_bat_file_for_selected_slot
+        )
+        self.inspector_bat_btn.pack(side="right", padx=(0, 10))
+
     def build_inspector_param_frames(self):
         """Creates individual configuration frames for each action type."""
         # 1. Empty Frame
@@ -529,6 +801,25 @@ class ClickPulseApp(ctk.CTk):
             command=self.browse_app_path
         )
         browse_btn.pack(side="right")
+
+        # 2C. Website Frame
+        self.param_web_frame = ctk.CTkFrame(self.inspector_panel, fg_color="transparent")
+        web_row = ctk.CTkFrame(self.param_web_frame, fg_color="transparent")
+        web_row.pack(fill="x", padx=15, pady=10)
+
+        web_lbl = ctk.CTkLabel(web_row, text="Website URL:", text_color=self.text_gray, font=("Helvetica", 11))
+        web_lbl.pack(side="left", padx=(0, 5))
+
+        self.web_url_entry = ctk.CTkEntry(web_row, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white)
+        self.web_url_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.web_url_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+
+        launch_web_btn = ctk.CTkButton(
+            web_row, text="Launch Test", fg_color=self.accent_pink, hover_color="#e04bb3",
+            text_color=self.text_white, font=("Helvetica", 11, "bold"), width=80, height=26,
+            command=self.test_launch_website
+        )
+        launch_web_btn.pack(side="right")
 
         # 3. Mouse Frame
         self.param_mouse_frame = ctk.CTkFrame(self.inspector_panel, fg_color="transparent")
@@ -675,10 +966,44 @@ class ClickPulseApp(ctk.CTk):
         ctk.CTkButton(macro_tb, text="+ Press Key", fg_color="#182d24", text_color=self.accent_green, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("key")).pack(fill="x", pady=2)
         ctk.CTkButton(macro_tb, text="+ Write Text", fg_color="#2c271c", text_color="#ff9500", font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("text")).pack(fill="x", pady=2)
         ctk.CTkButton(macro_tb, text="+ Launch App", fg_color="#182d24", text_color=self.accent_green, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("app")).pack(fill="x", pady=2)
+        ctk.CTkButton(macro_tb, text="+ Launch Web", fg_color="#2c1a30", text_color=self.accent_pink, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("web")).pack(fill="x", pady=2)
         ctk.CTkButton(macro_tb, text="+ Click Image", fg_color="#2c271c", text_color=self.accent_orange, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("image")).pack(fill="x", pady=2)
         ctk.CTkButton(macro_tb, text="Clear Steps", fg_color="transparent", border_color="#30363d", border_width=1, text_color=self.text_gray, font=("Helvetica", 10, "bold"), height=24, command=self.clear_inspector_macro_timeline).pack(fill="x", pady=(10, 2))
 
     # --- Property Inspector Actions ---
+
+    # --- Page Switching Methods ---
+
+    def prev_page(self):
+        if self.current_page > 0:
+            self.switch_page(self.current_page - 1)
+
+    def next_page(self):
+        if self.current_page < 4:
+            self.switch_page(self.current_page + 1)
+
+    def switch_page(self, page_idx):
+        self.current_page = page_idx
+        self.board_slots = self.board_pages[self.current_page]
+        self.page_lbl.configure(text=f"PAGE {self.current_page + 1} / 5")
+        
+        # Deselect old highlight coords and highlight (0, 0)
+        self.selected_row = 0
+        self.selected_col = 0
+        
+        self.refresh_grid_buttons()
+        self.on_grid_button_clicked(0, 0)
+        
+    def refresh_grid_buttons(self):
+        for r in range(4):
+            for c in range(8):
+                slot = self.board_slots[r][c]
+                border_c = self.get_slot_border_color(slot['type'])
+                if r == self.selected_row and c == self.selected_col:
+                    border_c = self.accent_cyan
+                
+                text_val = slot['title'] if slot['title'] else (slot['type'].upper() if slot['type'] != 'empty' else "")
+                self.grid_buttons[r][c].configure(text=text_val, border_color=border_c)
 
     def on_grid_button_clicked(self, r, c):
         old_r, old_c = self.selected_row, self.selected_col
@@ -698,6 +1023,8 @@ class ClickPulseApp(ctk.CTk):
     def get_slot_border_color(self, slot_type):
         if slot_type == "app":
             return self.accent_green
+        elif slot_type == "web":
+            return self.accent_pink
         elif slot_type == "mouse":
             return self.accent_cyan
         elif slot_type == "image":
@@ -724,6 +1051,7 @@ class ClickPulseApp(ctk.CTk):
         
     def format_type_name(self, action_type):
         if action_type == "app": return "Launch App"
+        elif action_type == "web": return "Launch Website"
         elif action_type == "mouse": return "Mouse Click"
         elif action_type == "image": return "Click at Image"
         elif action_type == "macro": return "Macro Sequence"
@@ -731,6 +1059,7 @@ class ClickPulseApp(ctk.CTk):
 
     def parse_type_name(self, combo_name):
         if combo_name == "Launch App": return "app"
+        elif combo_name == "Launch Website": return "web"
         elif combo_name == "Mouse Click": return "mouse"
         elif combo_name == "Click at Image": return "image"
         elif combo_name == "Macro Sequence": return "macro"
@@ -750,6 +1079,7 @@ class ClickPulseApp(ctk.CTk):
         # Hide all inspector sub-frames
         self.param_empty_frame.pack_forget()
         self.param_app_frame.pack_forget()
+        self.param_web_frame.pack_forget()
         self.param_mouse_frame.pack_forget()
         self.param_image_frame.pack_forget()
         self.param_macro_frame.pack_forget()
@@ -763,6 +1093,11 @@ class ClickPulseApp(ctk.CTk):
             self.app_path_entry.delete(0, "end")
             self.app_path_entry.insert(0, slot.get('app_path', ''))
             self.param_app_frame.pack(fill="both", expand=True)
+            
+        elif slot_type == "web":
+            self.web_url_entry.delete(0, "end")
+            self.web_url_entry.insert(0, slot.get('web_url', ''))
+            self.param_web_frame.pack(fill="both", expand=True)
             
         elif slot_type == "mouse":
             self.mouse_x_entry.delete(0, "end")
@@ -849,6 +1184,9 @@ class ClickPulseApp(ctk.CTk):
         if slot['type'] == 'app':
             slot['app_path'] = self.app_path_entry.get().strip()
             
+        elif slot['type'] == 'web':
+            slot['web_url'] = self.web_url_entry.get().strip()
+            
         elif slot['type'] == 'mouse':
             try:
                 slot['mouse_x'] = int(self.mouse_x_entry.get().strip())
@@ -897,6 +1235,8 @@ class ClickPulseApp(ctk.CTk):
                     step['text'] = action['text_entry'].get()
                 elif atype == 'app':
                     step['app_path'] = action['app_entry'].get().strip()
+                elif atype == 'web':
+                    step['web_url'] = action['web_entry'].get().strip()
                 elif atype == 'image':
                     step['image_path'] = action['image_entry'].get().strip()
                     step['confidence'] = action['confidence_slider'].get()
@@ -911,6 +1251,18 @@ class ClickPulseApp(ctk.CTk):
         self.save_board_data()
 
     # --- Property Inspector Callback Triggers ---
+
+    def test_launch_website(self):
+        url = self.web_url_entry.get().strip()
+        if url:
+            try:
+                import webbrowser
+                webbrowser.open(url)
+                self.log(f"Launching website: {url}", self.accent_green)
+            except Exception as e:
+                self.log(f"Failed to launch website: {str(e)}", "#ff453a")
+        else:
+            self.log("Website URL is blank.", "#ff9500")
 
     def browse_app_path(self):
         path = filedialog.askopenfilename(
@@ -1062,8 +1414,8 @@ class ClickPulseApp(ctk.CTk):
         index_lbl = ctk.CTkLabel(header, text="#0", font=("Helvetica", 10, "bold"), text_color=self.text_gray)
         index_lbl.pack(side="left", padx=(0, 6))
         
-        title_colors = {"mouse": self.accent_cyan, "delay": self.accent_purple, "key": self.accent_green, "text": "#ff9500", "app": self.accent_green, "image": self.accent_orange}
-        title_text = {"mouse": "MOUSE", "delay": "DELAY", "key": "KEYPRESS", "text": "TEXT", "app": "LAUNCH APP", "image": "CLICK IMAGE"}
+        title_colors = {"mouse": self.accent_cyan, "delay": self.accent_purple, "key": self.accent_green, "text": "#ff9500", "app": self.accent_green, "image": self.accent_orange, "web": self.accent_pink}
+        title_text = {"mouse": "MOUSE", "delay": "DELAY", "key": "KEYPRESS", "text": "TEXT", "app": "LAUNCH APP", "image": "CLICK IMAGE", "web": "LAUNCH WEB"}
         
         type_lbl = ctk.CTkLabel(header, text=title_text[action_type], font=("Helvetica", 10, "bold"), text_color=title_colors[action_type])
         type_lbl.pack(side="left")
@@ -1208,6 +1560,21 @@ class ClickPulseApp(ctk.CTk):
             
             action_data.update({
                 'app_entry': app_entry, 'browse_btn': browse_btn
+            })
+
+        elif action_type == "web":
+            web_val = step_data.get('web_url', '') if step_data else ""
+            
+            web_lbl = ctk.CTkLabel(body, text="URL:", text_color=self.text_gray, font=("Helvetica", 10))
+            web_lbl.pack(side="left", padx=(0, 4))
+            
+            web_entry = ctk.CTkEntry(body, height=20, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white, font=("Helvetica", 10))
+            web_entry.insert(0, web_val)
+            web_entry.pack(side="left", fill="x", expand=True)
+            web_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+            
+            action_data.update({
+                'web_entry': web_entry
             })
 
         elif action_type == "image":
@@ -1429,19 +1796,21 @@ class ClickPulseApp(ctk.CTk):
         r, c = self.selected_row, self.selected_col
         if r is None or c is None:
             return
-        self.execute_slot_action_async(r, c)
+        self.execute_slot_action_async(r, c, self.current_page)
 
-    def execute_slot_action_async(self, r, c):
-        threading.Thread(target=self.run_slot_action, args=(r, c), daemon=True).start()
+    def execute_slot_action_async(self, r, c, page_idx=None):
+        threading.Thread(target=self.run_slot_action, args=(r, c, page_idx), daemon=True).start()
 
-    def run_slot_action(self, r, c):
-        slot = self.board_slots[r][c]
+    def run_slot_action(self, r, c, page_idx=None):
+        if page_idx is None:
+            page_idx = self.current_page
+        slot = self.board_pages[page_idx][r][c]
         slot_type = slot['type']
         
         if slot_type == 'empty':
             return
             
-        self.log(f"Executing Grid Slot ({r+1}, {c+1}): '{slot['title'] or slot_type.upper()}'")
+        self.log(f"Executing Grid Slot P{page_idx+1} ({r+1}, {c+1}): '{slot['title'] or slot_type.upper()}'")
         
         # Prevent concurrent triggers
         if not self.sequence_lock.acquire(blocking=False):
@@ -1459,6 +1828,18 @@ class ClickPulseApp(ctk.CTk):
                     self.log(f"Successfully launched: {path}", self.accent_green)
                 except Exception as ex:
                     self.log(f"Failed launching app: {str(ex)}", "#ff453a")
+                    
+            elif slot_type == 'web':
+                url = slot.get('web_url', '').strip()
+                if not url:
+                    self.log("Website URL is blank.", "#ff453a")
+                    return
+                try:
+                    import webbrowser
+                    webbrowser.open(url)
+                    self.log(f"Successfully launched website: {url}", self.accent_green)
+                except Exception as ex:
+                    self.log(f"Failed launching website: {str(ex)}", "#ff453a")
                     
             elif slot_type == 'mouse':
                 x = slot.get('mouse_x', 1000)
@@ -1619,6 +2000,15 @@ class ClickPulseApp(ctk.CTk):
                             except Exception as ex:
                                 self.log(f"Failed to launch app in sequence: {str(ex)}", "#ff453a")
                                 
+                    elif stype == 'web':
+                        web_url = step.get('web_url', '').strip()
+                        if web_url:
+                            try:
+                                import webbrowser
+                                webbrowser.open(web_url)
+                            except Exception as ex:
+                                self.log(f"Failed to launch website in sequence: {str(ex)}", "#ff453a")
+
                     elif stype == 'image':
                         image_path = step.get('image_path', '').strip()
                         confidence = step.get('confidence', 0.8)
@@ -1706,17 +2096,18 @@ class ClickPulseApp(ctk.CTk):
         self.pressed_keys_global.add(key_name)
         
         current_time = time.time()
-        # Iterate over all 32 buttons
-        for r in range(4):
-            for c in range(8):
-                slot = self.board_slots[r][c]
-                if slot['type'] != 'empty' and slot['hotkey']:
-                    if slot['hotkey'].issubset(self.pressed_keys_global):
-                        # Debounce 400ms per trigger event
-                        if current_time - self.last_triggered_time > 0.4:
-                            self.last_triggered_time = current_time
-                            self.log(f"Global Hotkey Triggered for Slot ({r+1}, {c+1}): {' + '.join(sorted(list(slot['hotkey'])))}", self.accent_purple)
-                            self.execute_slot_action_async(r, c)
+        # Iterate over all pages and all 32 buttons per page
+        for p_idx, page in enumerate(self.board_pages):
+            for r in range(4):
+                for c in range(8):
+                    slot = page[r][c]
+                    if slot['type'] != 'empty' and slot['hotkey']:
+                        if slot['hotkey'].issubset(self.pressed_keys_global):
+                            # Debounce 400ms per trigger event
+                            if current_time - self.last_triggered_time > 0.4:
+                                self.last_triggered_time = current_time
+                                self.log(f"Global Hotkey Triggered for Slot P{p_idx+1} ({r+1}, {c+1}): {' + '.join(sorted(list(slot['hotkey'])))}", self.accent_purple)
+                                self.execute_slot_action_async(r, c, p_idx)
 
     def global_on_release(self, key):
         key_name = self.normalize_key_name(key)
@@ -1892,6 +2283,23 @@ if __name__ == "__main__":
             ctypes.windll.user32.SetProcessDPIAware()
         except:
             pass
+            
+    # CLI Mode check
+    import sys
+    if len(sys.argv) > 2 and sys.argv[1] == "--run-slot":
+        app = ClickPulseApp()
+        app.withdraw() # Hide GUI
+        try:
+            target = sys.argv[2] # e.g. P1_R1_C1
+            parts = target.split("_")
+            p_idx = int(parts[0][1:]) - 1
+            r_idx = int(parts[1][1:]) - 1
+            c_idx = int(parts[2][1:]) - 1
+            app.run_slot_action(r_idx, c_idx, p_idx)
+        except Exception as e:
+            print(f"CLI Error: {e}")
+        finally:
+            sys.exit(0)
             
     app = ClickPulseApp()
     app.mainloop()
