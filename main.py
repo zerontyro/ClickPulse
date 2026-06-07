@@ -1272,6 +1272,7 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     
                 elif atype == 'recorded':
                     step['events'] = action.get('events', [])
+                    step['skip_mouse_move'] = action.get('skip_var', ctk.StringVar(value='off')).get() == 'on'
                     
                 steps_data.append(step)
             slot['steps'] = steps_data
@@ -1840,6 +1841,7 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         elif action_type == "recorded":
             events = step_data.get('events', []) if step_data else []
             events_count = len(events)
+            skip_mouse_move_val = step_data.get('skip_mouse_move', False) if step_data else False
             
             # Calculate duration
             if events:
@@ -1847,13 +1849,43 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
             else:
                 duration = 0.0
                 
+            # Row 1: Stats
             lbl_text = f"Recorded: {events_count} events, Duration: {duration:.2f}s"
             info_lbl = ctk.CTkLabel(body, text=lbl_text, text_color=self.accent_gold, font=("Helvetica", 11, "bold"))
             info_lbl.pack(side="left", padx=(0, 10))
-            
+
+            # Row 2: WARP option (separate row below)
+            warp_row = ctk.CTkFrame(card, fg_color="#10131a", corner_radius=6)
+            warp_row.pack(fill="x", padx=8, pady=(0, 6))
+
+            warp_divider = ctk.CTkLabel(warp_row, text="MOUSE OPTIONS", font=("Helvetica", 9, "bold"), text_color="#4a5568")
+            warp_divider.pack(anchor="center", pady=(4, 2))
+
+            warp_inner = ctk.CTkFrame(warp_row, fg_color="transparent")
+            warp_inner.pack(fill="x", padx=8, pady=(0, 4))
+
+            warp_badge = ctk.CTkLabel(warp_inner, text="«WARP» Motion", font=("Helvetica", 10, "bold"), text_color="#7c3aed")
+            warp_badge.pack(side="left", padx=(0, 8))
+
+            skip_var = ctk.StringVar(value="on" if skip_mouse_move_val else "off")
+            skip_cb = ctk.CTkCheckBox(
+                warp_inner, text="🚀 Skip Mouse Movement",
+                variable=skip_var, onvalue="on", offvalue="off",
+                font=("Helvetica", 10, "bold"), text_color="#a78bfa",
+                checkmark_color="#7c3aed", fg_color="#7c3aed", hover_color="#5b21b6",
+                command=self.save_current_inspector_data
+            )
+            skip_cb.pack(side="left")
+
+            warp_hint = ctk.CTkLabel(warp_row, text="Only Start and Stop Mouse-Position within a Section are executed (Affects the Process Time)",
+                                     font=("Helvetica", 9), text_color="#4a5568", wraplength=320, justify="left")
+            warp_hint.pack(anchor="w", padx=8, pady=(0, 4))
+
             action_data.update({
                 'info_lbl': info_lbl,
-                'events': events
+                'events': events,
+                'skip_var': skip_var,
+                'skip_cb': skip_cb
             })
 
         self.sequence_actions.append(action_data)
@@ -2273,8 +2305,10 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                             
                     elif stype == 'recorded':
                         events = step.get('events', [])
+                        skip_mouse_move = step.get('skip_mouse_move', False)
                         if events:
-                            self.log(f"Replaying recorded session: {len(events)} events...", self.accent_purple)
+                            mode_str = " (WARP: mouse moves skipped)" if skip_mouse_move else ""
+                            self.log(f"Replaying recorded session: {len(events)} events{mode_str}...", self.accent_purple)
                             start_time = time.time()
                             base_offset = events[0].get('time', 0.0)
                             
@@ -2286,6 +2320,8 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                                     
                                 etype = ev.get('type')
                                 if etype == 'mouse_move':
+                                    if skip_mouse_move:
+                                        continue
                                     self.mouse_controller.position = (ev['x'], ev['y'])
                                 elif etype == 'mouse_down':
                                     self.mouse_controller.position = (ev['x'], ev['y'])
