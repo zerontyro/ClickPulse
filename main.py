@@ -1,0 +1,1897 @@
+import os
+import sys
+import time
+import math
+import json
+import threading
+import tkinter as tk
+from tkinter import filedialog
+import customtkinter as ctk
+from pynput import mouse as pynput_mouse
+from pynput import keyboard as pynput_keyboard
+import darkdetect
+
+# Image Recognition imports
+try:
+    import cv2
+    import numpy as np
+    from PIL import ImageGrab, ImageEnhance, ImageTk, Image
+    OPENCV_AVAILABLE = True
+except ImportError:
+    OPENCV_AVAILABLE = False
+
+# Set default appearance
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
+# Global mapping for keyboard keystrokes
+SPECIAL_KEYS_MAP = {
+    'Ctrl': pynput_keyboard.Key.ctrl,
+    'Alt': pynput_keyboard.Key.alt,
+    'Shift': pynput_keyboard.Key.shift,
+    'Win': pynput_keyboard.Key.cmd,
+    'Space': pynput_keyboard.Key.space,
+    'Enter': pynput_keyboard.Key.enter,
+    'Tab': pynput_keyboard.Key.tab,
+    'CapsLock': pynput_keyboard.Key.caps_lock,
+    'Backspace': pynput_keyboard.Key.backspace,
+    'Delete': pynput_keyboard.Key.delete,
+    'Insert': pynput_keyboard.Key.insert,
+    'Home': pynput_keyboard.Key.home,
+    'End': pynput_keyboard.Key.end,
+    'PgUp': pynput_keyboard.Key.page_up,
+    'PgDn': pynput_keyboard.Key.page_down,
+    'Up': pynput_keyboard.Key.up,
+    'Down': pynput_keyboard.Key.down,
+    'Left': pynput_keyboard.Key.left,
+    'Right': pynput_keyboard.Key.right,
+    'Esc': pynput_keyboard.Key.esc,
+    'F1': pynput_keyboard.Key.f1,
+    'F2': pynput_keyboard.Key.f2,
+    'F3': pynput_keyboard.Key.f3,
+    'F4': pynput_keyboard.Key.f4,
+    'F5': pynput_keyboard.Key.f5,
+    'F6': pynput_keyboard.Key.f6,
+    'F7': pynput_keyboard.Key.f7,
+    'F8': pynput_keyboard.Key.f8,
+    'F9': pynput_keyboard.Key.f9,
+    'F10': pynput_keyboard.Key.f10,
+    'F11': pynput_keyboard.Key.f11,
+    'F12': pynput_keyboard.Key.f12,
+}
+
+class CoordinatePicker:
+    """Creates a full-screen semi-transparent overlay to capture coordinates visually."""
+    def __init__(self, parent_app, on_select_callback):
+        self.parent = parent_app
+        self.callback = on_select_callback
+        
+        self.parent.withdraw()
+        
+        self.window = tk.Toplevel()
+        self.window.title("ClickPulse - Coordinate Picker")
+        self.window.attributes("-fullscreen", True)
+        self.window.attributes("-topmost", True)
+        self.window.attributes("-alpha", 0.45)
+        self.window.configure(cursor="crosshair")
+        self.window.configure(bg="#05070a")
+        
+        self.canvas = tk.Canvas(self.window, bg="#05070a", highlightthickness=0, bd=0)
+        self.canvas.pack(fill="both", expand=True)
+        
+        self.window.bind("<Motion>", self.on_mouse_move)
+        self.window.bind("<Button-1>", self.on_click)
+        self.window.bind("<space>", self.on_space)
+        self.window.bind("<Escape>", self.on_cancel)
+        
+        self.current_x = 0
+        self.current_y = 0
+        self.width = self.window.winfo_screenwidth()
+        self.height = self.window.winfo_screenheight()
+        
+        self.canvas.create_text(
+            self.width // 2, 50, 
+            text="COORDINATE PICKER MODE", fill="#00f0ff", font=("Helvetica", 18, "bold")
+        )
+        self.canvas.create_text(
+            self.width // 2, 85, 
+            text="Move cursor to target • Left-Click or Press SPACE to capture • Press ESC to cancel", 
+            fill="#ffffff", font=("Helvetica", 12)
+        )
+
+    def on_mouse_move(self, event):
+        self.current_x, self.current_y = event.x_root, event.y_root
+        self.draw_overlay()
+
+    def draw_overlay(self):
+        self.canvas.delete("crosshair")
+        self.canvas.create_line(0, self.current_y, self.width, self.current_y, fill="#00f0ff", width=1, tags="crosshair", dash=(4, 4))
+        self.canvas.create_line(self.current_x, 0, self.current_x, self.height, fill="#00f0ff", width=1, tags="crosshair", dash=(4, 4))
+        
+        self.canvas.create_oval(self.current_x - 12, self.current_y - 12, self.current_x + 12, self.current_y + 12, outline="#00ff88", width=2, tags="crosshair")
+        self.canvas.create_oval(self.current_x - 3, self.current_y - 3, self.current_x + 3, self.current_y + 3, fill="#00ff88", outline="#00ff88", tags="crosshair")
+        
+        badge_text = f" X: {self.current_x}  Y: {self.current_y} "
+        text_w, text_h = 130, 24
+        badge_x, badge_y = self.current_x + 18, self.current_y + 18
+        
+        if badge_x + text_w > self.width:
+            badge_x = self.current_x - text_w - 18
+        if badge_y + text_h > self.height:
+            badge_y = self.current_y - text_h - 18
+            
+        self.canvas.create_rectangle(badge_x, badge_y, badge_x + text_w, badge_y + text_h, fill="#161b22", outline="#00f0ff", width=1, tags="crosshair")
+        self.canvas.create_text(badge_x + text_w // 2, badge_y + text_h // 2, text=badge_text, fill="#ffffff", font=("Consolas", 11, "bold"), tags="crosshair")
+
+    def on_click(self, event):
+        self.capture()
+
+    def on_space(self, event):
+        self.capture()
+
+    def capture(self):
+        self.window.destroy()
+        self.parent.deiconify()
+        self.callback(self.current_x, self.current_y)
+
+    def on_cancel(self, event):
+        self.window.destroy()
+        self.parent.deiconify()
+        self.callback(None, None)
+
+
+class ScreenSnipper:
+    """Creates a full-screen overlay to snip a region of the screen and save it as an image."""
+    def __init__(self, parent_app, on_select_callback):
+        self.parent = parent_app
+        self.callback = on_select_callback
+        
+        self.parent.withdraw()
+        self.parent.update_idletasks()
+        time.sleep(0.35)  # Wait for window to fade out
+        
+        try:
+            self.screenshot = ImageGrab.grab(all_screens=True)
+            self.width, self.height = self.screenshot.size
+        except Exception as e:
+            self.parent.deiconify()
+            self.callback(None)
+            self.parent.log(f"Snipping capture failed: {str(e)}", "#ff453a")
+            return
+
+        self.window = tk.Toplevel()
+        self.window.title("ClickPulse - Image Snipper")
+        self.window.attributes("-fullscreen", True)
+        self.window.attributes("-topmost", True)
+        
+        self.canvas = tk.Canvas(self.window, bg="black", highlightthickness=0, bd=0)
+        self.canvas.pack(fill="both", expand=True)
+        
+        from PIL import ImageTk, ImageEnhance
+        
+        self.bg_image_original = self.screenshot
+        enhancer = ImageEnhance.Brightness(self.bg_image_original)
+        self.bg_image_dimmed = enhancer.enhance(0.40)
+        
+        self.tk_bg_image = ImageTk.PhotoImage(self.bg_image_dimmed)
+        self.canvas.create_image(0, 0, anchor="nw", image=self.tk_bg_image)
+        
+        self.window.bind("<ButtonPress-1>", self.on_button_press)
+        self.window.bind("<B1-Motion>", self.on_move_press)
+        self.window.bind("<ButtonRelease-1>", self.on_button_release)
+        self.window.bind("<Escape>", self.on_cancel)
+        
+        self.start_x = None
+        self.start_y = None
+        self.cur_x = None
+        self.cur_y = None
+        
+        self.canvas.create_text(
+            self.width // 2, 50,
+            text="SCREEN SNIPPER MODE", fill="#ff9500", font=("Helvetica", 18, "bold")
+        )
+        self.canvas.create_text(
+            self.width // 2, 85,
+            text="Left-Click and drag a box around the target image • Release to capture • Press ESC to cancel",
+            fill="#ffffff", font=("Helvetica", 12)
+        )
+
+    def on_button_press(self, event):
+        self.start_x = event.x
+        self.start_y = event.y
+
+    def on_move_press(self, event):
+        self.cur_x = event.x
+        self.cur_y = event.y
+        
+        self.canvas.delete("snipping_rect")
+        
+        x1 = min(self.start_x, self.cur_x)
+        y1 = min(self.start_y, self.cur_y)
+        x2 = max(self.start_x, self.cur_x)
+        y2 = max(self.start_y, self.cur_y)
+        
+        self.canvas.create_rectangle(x1, y1, x2, y2, outline="#ff9500", width=2, tags="snipping_rect")
+        self.canvas.create_rectangle(x1+1, y1+1, x2-1, y2-1, outline="#ffffff", width=1, dash=(2, 2), tags="snipping_rect")
+
+    def on_button_release(self, event):
+        self.cur_x = event.x
+        self.cur_y = event.y
+        
+        self.window.destroy()
+        self.parent.deiconify()
+        
+        if self.start_x is None or self.cur_x is None:
+            self.callback(None)
+            return
+            
+        x1 = min(self.start_x, self.cur_x)
+        y1 = min(self.start_y, self.cur_y)
+        x2 = max(self.start_x, self.cur_x)
+        y2 = max(self.start_y, self.cur_y)
+        
+        if x2 - x1 < 5 or y2 - y1 < 5:
+            self.callback(None)
+            return
+            
+        cropped = self.bg_image_original.crop((x1, y1, x2, y2))
+        self.callback(cropped)
+
+    def on_cancel(self, event):
+        self.window.destroy()
+        self.parent.deiconify()
+        self.callback(None)
+
+
+class ClickPulseApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        # Configure Main Window
+        self.title("ClickPulse - Virtual Control Deck")
+        self.geometry("1020x860")
+        self.resizable(False, False)
+        
+        # Style Constants
+        self.bg_color = "#0a0c10"
+        self.frame_bg = "#12161f"
+        self.accent_cyan = "#00f0ff"
+        self.accent_green = "#00ff88"
+        self.accent_purple = "#bf5af2"
+        self.accent_orange = "#ff9500"
+        self.text_white = "#ffffff"
+        self.text_gray = "#8b949e"
+        
+        self.configure(fg_color=self.bg_color)
+        
+        # Selected slot coordinates
+        self.selected_row = 0
+        self.selected_col = 0
+        
+        # Global states
+        self.is_recording_slot = False
+        self.recorded_keys_temp = set()
+        self.pressed_keys_global = set()
+        self.recording_card_idx = None
+        self.sequence_actions = []            # Temp container for timeline widgets
+        self.last_triggered_time = 0.0
+        
+        # File paths
+        exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        self.board_file = os.path.join(exe_dir, "board.json")
+        
+        # Load board structures
+        self.load_board_data()
+        
+        # Input controllers
+        self.mouse_controller = pynput_mouse.Controller()
+        self.keyboard_controller = pynput_keyboard.Controller()
+        self.sequence_lock = threading.Lock()
+        
+        # Build UI layout
+        self.setup_ui()
+        
+        # Select first button by default
+        self.on_grid_button_clicked(0, 0)
+        
+        # Bind keyboard listeners
+        self.keyboard_listener = pynput_keyboard.Listener(
+            on_press=self.global_on_press,
+            on_release=self.global_on_release
+        )
+        self.keyboard_listener.start()
+        
+        self.log("Virtual Control Deck ready.")
+
+    def load_board_data(self):
+        self.board_slots = []
+        loaded = False
+        if os.path.exists(self.board_file):
+            try:
+                with open(self.board_file, "r") as f:
+                    data = json.load(f)
+                    for r in range(4):
+                        row_data = []
+                        for c in range(8):
+                            slot = data[r][c]
+                            slot['hotkey'] = set(slot['hotkey'])
+                            if 'steps' not in slot:
+                                slot['steps'] = []
+                            row_data.append(slot)
+                        self.board_slots.append(row_data)
+                    loaded = True
+            except Exception as e:
+                pass
+                
+        if not loaded:
+            for r in range(4):
+                row_data = []
+                for c in range(8):
+                    row_data.append({
+                        'type': 'empty',
+                        'title': '',
+                        'hotkey': set(),
+                        'app_path': '',
+                        'mouse_x': 1000,
+                        'mouse_y': 850,
+                        'click_type': 'Left Click',
+                        'glide_enabled': True,
+                        'glide_duration': 0.1,
+                        'steps': []
+                    })
+                self.board_slots.append(row_data)
+            self.save_board_data()
+
+    def save_board_data(self):
+        serializable = []
+        for r in range(4):
+            row_data = []
+            for c in range(8):
+                slot = self.board_slots[r][c]
+                slot_copy = slot.copy()
+                slot_copy['hotkey'] = list(slot['hotkey'])
+                row_data.append(slot_copy)
+            serializable.append(row_data)
+            
+        try:
+            with open(self.board_file, "w") as f:
+                json.dump(serializable, f, indent=4)
+        except Exception as e:
+            self.log(f"Error saving board settings: {str(e)}", "#ff453a")
+
+    def setup_ui(self):
+        # 1. Main Header
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.pack(fill="x", padx=30, pady=(20, 10))
+        
+        title_lbl = ctk.CTkLabel(header_frame, text="VIRTUAL DECK CONSOLE", text_color=self.accent_cyan, font=("Helvetica", 20, "bold"))
+        title_lbl.pack(side="left")
+        
+        profile_lbl = ctk.CTkLabel(header_frame, text="Default Profile v", text_color=self.text_gray, font=("Helvetica", 12))
+        profile_lbl.pack(side="left", padx=15)
+
+        # 2. Main Middle Split
+        middle_split = ctk.CTkFrame(self, fg_color="transparent")
+        middle_split.pack(fill="both", expand=True, padx=25, pady=(0, 10))
+
+        # 2A. Left Layout: Grid panel + Inspector Panel
+        left_panel = ctk.CTkFrame(middle_split, fg_color="transparent")
+        left_panel.pack(side="left", fill="both", expand=True)
+
+        # 8x4 Button Grid (Stream Deck Layout)
+        self.grid_buttons = []
+        grid_frame = ctk.CTkFrame(left_panel, fg_color="transparent")
+        grid_frame.pack(pady=10)
+        
+        for r in range(4):
+            row_btns = []
+            for c in range(8):
+                slot = self.board_slots[r][c]
+                border_c = self.get_slot_border_color(slot['type'])
+                
+                btn = ctk.CTkButton(
+                    grid_frame,
+                    text=slot['title'] if slot['title'] else (slot['type'].upper() if slot['type'] != 'empty' else ""),
+                    width=74,
+                    height=74,
+                    corner_radius=14,
+                    fg_color="#181c24",
+                    hover_color="#242b36",
+                    border_color=border_c,
+                    border_width=2,
+                    text_color="#ffffff",
+                    font=("Helvetica", 9, "bold"),
+                    command=lambda row=r, col=c: self.on_grid_button_clicked(row, col)
+                )
+                btn.grid(row=r, column=c, padx=6, pady=6)
+                row_btns.append(btn)
+            self.grid_buttons.append(row_btns)
+
+        # Bottom Inspector Panel
+        self.inspector_panel = ctk.CTkFrame(left_panel, fg_color=self.frame_bg, corner_radius=12, border_color="#21262d", border_width=1, height=380)
+        self.inspector_panel.pack(fill="both", expand=True, pady=(5, 0))
+        self.inspector_panel.pack_propagate(False)
+
+        # Inspector Title, Type Selection and Hotkeys Config Row
+        self.build_inspector_header()
+
+        # Build Parameter Sub-frames inside Inspector
+        self.build_inspector_param_frames()
+
+        # 2B. Right Layout: Action Toolbox Sidebar
+        self.toolbox_panel = ctk.CTkFrame(middle_split, fg_color=self.frame_bg, width=220, corner_radius=12, border_color="#21262d", border_width=1)
+        self.toolbox_panel.pack(side="right", fill="y", padx=(10, 0))
+        self.toolbox_panel.pack_propagate(False)
+
+        tb_title = ctk.CTkLabel(self.toolbox_panel, text="Toolbox Actions", text_color=self.accent_cyan, font=("Helvetica", 14, "bold"))
+        tb_title.pack(anchor="w", padx=15, pady=(15, 10))
+
+        tb_desc = ctk.CTkLabel(self.toolbox_panel, text="Select a grid slot and click an action type below to assign it:", text_color=self.text_gray, font=("Helvetica", 11), wraplength=190, justify="left")
+        tb_desc.pack(anchor="w", padx=15, pady=(0, 15))
+
+        # Toolbox Assignment Triggers
+        self.btn_tb_app = ctk.CTkButton(self.toolbox_panel, text="Launch Application", fg_color="#182d24", hover_color="#224033", text_color=self.accent_green, font=("Helvetica", 12, "bold"), height=34, command=lambda: self.assign_action_to_selected("app"))
+        self.btn_tb_app.pack(fill="x", padx=15, pady=6)
+
+        self.btn_tb_click = ctk.CTkButton(self.toolbox_panel, text="Mouse Clicker", fg_color="#1a2536", hover_color="#24344d", text_color=self.accent_cyan, font=("Helvetica", 12, "bold"), height=34, command=lambda: self.assign_action_to_selected("mouse"))
+        self.btn_tb_click.pack(fill="x", padx=15, pady=6)
+
+        self.btn_tb_image = ctk.CTkButton(self.toolbox_panel, text="Click at Image", fg_color="#2c271c", hover_color="#3d3727", text_color=self.accent_orange, font=("Helvetica", 12, "bold"), height=34, command=lambda: self.assign_action_to_selected("image"))
+        self.btn_tb_image.pack(fill="x", padx=15, pady=6)
+
+        self.btn_tb_macro = ctk.CTkButton(self.toolbox_panel, text="Macro Sequence", fg_color="#241e33", hover_color="#332a4a", text_color=self.accent_purple, font=("Helvetica", 12, "bold"), height=34, command=lambda: self.assign_action_to_selected("macro"))
+        self.btn_tb_macro.pack(fill="x", padx=15, pady=6)
+
+        self.btn_tb_clear = ctk.CTkButton(self.toolbox_panel, text="Clear Selected Slot", fg_color="transparent", hover_color="#2b3240", border_color="#30363d", border_width=1, text_color=self.text_gray, font=("Helvetica", 12, "bold"), height=34, command=lambda: self.assign_action_to_selected("empty"))
+        self.btn_tb_clear.pack(fill="x", padx=15, pady=(25, 6))
+
+        # 3. Visual Log Panel at the absolute bottom
+        self.log_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.log_container.pack(fill="x", side="bottom", padx=25, pady=(0, 15))
+
+        log_head = ctk.CTkFrame(self.log_container, fg_color="transparent")
+        log_head.pack(fill="x")
+        
+        ctk.CTkLabel(log_head, text="Visual Event Logs", text_color=self.text_white, font=("Helvetica", 12, "bold")).pack(side="left")
+        ctk.CTkButton(log_head, text="Clear Logs", fg_color="transparent", hover_color="#1a1e26", text_color=self.text_gray, font=("Helvetica", 10, "underline"), width=60, height=20, command=self.clear_logs).pack(side="right")
+        
+        self.log_text = ctk.CTkTextbox(self.log_container, fg_color="#06080b", border_color="#1f242e", border_width=1, text_color="#00ff88", font=("Consolas", 11), corner_radius=8, height=100)
+        self.log_text.pack(fill="both", expand=True, pady=(5, 0))
+        self.log_text.configure(state="disabled")
+
+    def build_inspector_header(self):
+        """Creates the shared configuration headers inside property inspector."""
+        header = ctk.CTkFrame(self.inspector_panel, fg_color="transparent")
+        header.pack(fill="x", padx=15, pady=(12, 8))
+        
+        # Title Entry
+        title_lbl = ctk.CTkLabel(header, text="Title:", text_color=self.text_gray, font=("Helvetica", 11))
+        title_lbl.pack(side="left", padx=(0, 4))
+        self.inspector_title_entry = ctk.CTkEntry(header, width=120, height=26, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white)
+        self.inspector_title_entry.pack(side="left", padx=(0, 15))
+        self.inspector_title_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+
+        # Type Selector Dropdown
+        type_lbl = ctk.CTkLabel(header, text="Type:", text_color=self.text_gray, font=("Helvetica", 11))
+        type_lbl.pack(side="left", padx=(0, 4))
+        self.inspector_type_combo = ctk.CTkOptionMenu(
+            header,
+            values=["Empty", "Launch App", "Mouse Click", "Click at Image", "Macro Sequence"],
+            fg_color="#0a0c10", button_color="#1f242e", button_hover_color="#282f3d", text_color=self.text_white,
+            dropdown_fg_color="#12161f", font=("Helvetica", 11), width=130, height=26,
+            command=self.on_inspector_type_changed
+        )
+        self.inspector_type_combo.pack(side="left", padx=(0, 15))
+
+        # Hotkey binder
+        hk_lbl = ctk.CTkLabel(header, text="Hotkey:", text_color=self.text_gray, font=("Helvetica", 11))
+        hk_lbl.pack(side="left", padx=(0, 4))
+        self.inspector_hotkey_display = ctk.CTkLabel(header, text="None", text_color=self.accent_purple, font=("Consolas", 12, "bold"))
+        self.inspector_hotkey_display.pack(side="left", padx=(0, 8))
+        
+        self.inspector_rec_btn = ctk.CTkButton(
+            header, text="Record", fg_color="#1c212e", hover_color="#2b3240", border_color="#30363d", border_width=1,
+            text_color=self.text_white, font=("Helvetica", 11, "bold"), width=70, height=26, corner_radius=6,
+            command=self.start_slot_hotkey_recording
+        )
+        self.inspector_rec_btn.pack(side="left", padx=(0, 10))
+
+        # Test trigger button
+        self.inspector_test_btn = ctk.CTkButton(
+            header, text="Test Key", fg_color="#1f242e", hover_color="#2b3240", border_color=self.accent_purple, border_width=1,
+            text_color=self.accent_purple, font=("Helvetica", 11, "bold"), width=75, height=26, corner_radius=6,
+            command=self.trigger_selected_slot_async
+        )
+        self.inspector_test_btn.pack(side="right")
+
+    def build_inspector_param_frames(self):
+        """Creates individual configuration frames for each action type."""
+        # 1. Empty Frame
+        self.param_empty_frame = ctk.CTkFrame(self.inspector_panel, fg_color="transparent")
+        self.empty_lbl = ctk.CTkLabel(self.param_empty_frame, text="Select an action type to configure settings.", text_color=self.text_gray, font=("Helvetica", 12))
+        self.empty_lbl.pack(expand=True, pady=60)
+        
+        # 2. App Frame
+        self.param_app_frame = ctk.CTkFrame(self.inspector_panel, fg_color="transparent")
+        app_row = ctk.CTkFrame(self.param_app_frame, fg_color="transparent")
+        app_row.pack(fill="x", padx=15, pady=10)
+        
+        app_lbl = ctk.CTkLabel(app_row, text="Application Path:", text_color=self.text_gray, font=("Helvetica", 11))
+        app_lbl.pack(side="left", padx=(0, 5))
+        
+        self.app_path_entry = ctk.CTkEntry(app_row, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white)
+        self.app_path_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.app_path_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+        
+        browse_btn = ctk.CTkButton(
+            app_row, text="Browse", fg_color=self.accent_purple, hover_color="#a841e0",
+            text_color=self.text_white, font=("Helvetica", 11, "bold"), width=80, height=26,
+            command=self.browse_app_path
+        )
+        browse_btn.pack(side="right")
+
+        # 3. Mouse Frame
+        self.param_mouse_frame = ctk.CTkFrame(self.inspector_panel, fg_color="transparent")
+        
+        m_row1 = ctk.CTkFrame(self.param_mouse_frame, fg_color="transparent")
+        m_row1.pack(fill="x", padx=15, pady=8)
+        
+        m_x_lbl = ctk.CTkLabel(m_row1, text="X Coord:", text_color=self.text_gray, font=("Helvetica", 11))
+        m_x_lbl.pack(side="left", padx=(0, 4))
+        self.mouse_x_entry = ctk.CTkEntry(m_row1, width=70, height=24, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white)
+        self.mouse_x_entry.pack(side="left", padx=(0, 15))
+        self.mouse_x_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+        
+        m_y_lbl = ctk.CTkLabel(m_row1, text="Y Coord:", text_color=self.text_gray, font=("Helvetica", 11))
+        m_y_lbl.pack(side="left", padx=(0, 4))
+        self.mouse_y_entry = ctk.CTkEntry(m_row1, width=70, height=24, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white)
+        self.mouse_y_entry.pack(side="left", padx=(0, 15))
+        self.mouse_y_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+
+        m_pick_btn = ctk.CTkButton(
+            m_row1, text="Pick Position", fg_color=self.accent_purple, hover_color="#a841e0",
+            text_color=self.text_white, font=("Helvetica", 11, "bold"), width=100, height=24,
+            command=self.start_slot_coordinate_picking
+        )
+        m_pick_btn.pack(side="left", padx=(0, 20))
+
+        m_type_lbl = ctk.CTkLabel(m_row1, text="Click Type:", text_color=self.text_gray, font=("Helvetica", 11))
+        m_type_lbl.pack(side="left", padx=(0, 4))
+        self.mouse_click_combo = ctk.CTkOptionMenu(
+            m_row1, values=["Left Click", "Double Left Click", "Right Click", "Middle Click", "Only Move"],
+            fg_color="#0a0c10", button_color="#1f242e", button_hover_color="#282f3d", text_color=self.text_white,
+            dropdown_fg_color="#12161f", font=("Helvetica", 11), width=120, height=24,
+            command=lambda val: self.save_current_inspector_data()
+        )
+        self.mouse_click_combo.pack(side="left")
+
+        m_row2 = ctk.CTkFrame(self.param_mouse_frame, fg_color="transparent")
+        m_row2.pack(fill="x", padx=15, pady=8)
+
+        self.mouse_glide_switch = ctk.CTkSwitch(
+            m_row2, text="Enable Smooth Glide", text_color=self.text_gray, font=("Helvetica", 11), progress_color=self.accent_cyan,
+            command=self.on_mouse_glide_switch_toggled
+        )
+        self.mouse_glide_switch.pack(side="left", padx=(0, 20))
+        
+        self.mouse_glide_lbl = ctk.CTkLabel(m_row2, text="Duration: 0.1s", text_color=self.accent_cyan, font=("Consolas", 11, "bold"))
+        self.mouse_glide_lbl.pack(side="right", padx=(5, 0))
+
+        self.mouse_glide_slider = ctk.CTkSlider(
+            m_row2, from_=0.1, to=2.0, number_of_steps=19, progress_color=self.accent_cyan, button_color=self.accent_cyan,
+            command=self.on_mouse_glide_slider_changed
+        )
+        self.mouse_glide_slider.pack(side="right", fill="x", expand=True, padx=10)
+
+        # 3B. Image Recognition Frame
+        self.param_image_frame = ctk.CTkFrame(self.inspector_panel, fg_color="transparent")
+        
+        img_row1 = ctk.CTkFrame(self.param_image_frame, fg_color="transparent")
+        img_row1.pack(fill="x", padx=15, pady=8)
+        
+        img_lbl = ctk.CTkLabel(img_row1, text="Target Image:", text_color=self.text_gray, font=("Helvetica", 11))
+        img_lbl.pack(side="left", padx=(0, 5))
+        
+        self.image_path_entry = ctk.CTkEntry(img_row1, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white)
+        self.image_path_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.image_path_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+        
+        img_browse_btn = ctk.CTkButton(
+            img_row1, text="Browse", fg_color=self.accent_purple, hover_color="#a841e0",
+            text_color=self.text_white, font=("Helvetica", 11, "bold"), width=80, height=26,
+            command=self.browse_image_path
+        )
+        img_browse_btn.pack(side="right", padx=(0, 8))
+        
+        img_snip_btn = ctk.CTkButton(
+            img_row1, text="Snip Image", fg_color="#2c271c", hover_color="#3d3727",
+            text_color="#ff9500", font=("Helvetica", 11, "bold"), width=90, height=26,
+            command=self.start_slot_image_snipping
+        )
+        img_snip_btn.pack(side="right")
+        
+        img_row2 = ctk.CTkFrame(self.param_image_frame, fg_color="transparent")
+        img_row2.pack(fill="x", padx=15, pady=8)
+        
+        img_type_lbl = ctk.CTkLabel(img_row2, text="Click Type:", text_color=self.text_gray, font=("Helvetica", 11))
+        img_type_lbl.pack(side="left", padx=(0, 4))
+        
+        self.image_click_combo = ctk.CTkOptionMenu(
+            img_row2, values=["Left Click", "Double Left Click", "Right Click", "Middle Click", "Only Move"],
+            fg_color="#0a0c10", button_color="#1f242e", button_hover_color="#282f3d", text_color=self.text_white,
+            dropdown_fg_color="#12161f", font=("Helvetica", 11), width=120, height=24,
+            command=lambda val: self.save_current_inspector_data()
+        )
+        self.image_click_combo.pack(side="left", padx=(0, 20))
+        
+        self.image_confidence_lbl = ctk.CTkLabel(img_row2, text="Confidence: 0.80", text_color="#ff9500", font=("Consolas", 11, "bold"))
+        self.image_confidence_lbl.pack(side="left", padx=(0, 8))
+        
+        self.image_confidence_slider = ctk.CTkSlider(
+            img_row2, from_=0.5, to=1.0, number_of_steps=50, progress_color="#ff9500", button_color="#ff9500",
+            width=100, command=self.on_image_confidence_slider_changed
+        )
+        self.image_confidence_slider.pack(side="left", padx=(0, 25))
+        
+        self.image_glide_switch = ctk.CTkSwitch(
+            img_row2, text="Glide", text_color=self.text_gray, font=("Helvetica", 11), progress_color=self.accent_cyan,
+            command=self.on_image_glide_switch_toggled
+        )
+        self.image_glide_switch.pack(side="left", padx=(0, 15))
+        
+        self.image_glide_lbl = ctk.CTkLabel(img_row2, text="Duration: 0.1s", text_color=self.accent_cyan, font=("Consolas", 11, "bold"))
+        self.image_glide_lbl.pack(side="right", padx=(5, 0))
+        
+        self.image_glide_slider = ctk.CTkSlider(
+            img_row2, from_=0.1, to=2.0, number_of_steps=19, progress_color=self.accent_cyan, button_color=self.accent_cyan,
+            command=self.on_image_glide_slider_changed
+        )
+        self.image_glide_slider.pack(side="right", fill="x", expand=True, padx=10)
+
+        # 4. Macro Frame
+        self.param_macro_frame = ctk.CTkFrame(self.inspector_panel, fg_color="transparent")
+        
+        macro_split = ctk.CTkFrame(self.param_macro_frame, fg_color="transparent")
+        macro_split.pack(fill="both", expand=True, padx=15, pady=5)
+        
+        # Macro Timeline Scrollable
+        self.macro_timeline_frame = ctk.CTkScrollableFrame(
+            macro_split, fg_color="#06080b", border_color="#1f242e", border_width=1, corner_radius=8,
+            label_text="Steps Timeline"
+        )
+        self.macro_timeline_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        
+        # Macro Timeline Empty Placeholder
+        self.macro_placeholder = ctk.CTkLabel(self.macro_timeline_frame, text="Macro timeline is empty. Add steps on the right.", text_color=self.text_gray, font=("Helvetica", 11))
+        self.macro_placeholder.pack(pady=40)
+
+        # Macro Timeline Toolbox
+        macro_tb = ctk.CTkFrame(macro_split, fg_color="transparent", width=130)
+        macro_tb.pack(side="right", fill="y")
+        macro_tb.pack_propagate(False)
+        
+        ctk.CTkButton(macro_tb, text="+ Mouse Click", fg_color="#1a2536", text_color=self.accent_cyan, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("mouse")).pack(fill="x", pady=2)
+        ctk.CTkButton(macro_tb, text="+ Wait Delay", fg_color="#241e33", text_color=self.accent_purple, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("delay")).pack(fill="x", pady=2)
+        ctk.CTkButton(macro_tb, text="+ Press Key", fg_color="#182d24", text_color=self.accent_green, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("key")).pack(fill="x", pady=2)
+        ctk.CTkButton(macro_tb, text="+ Write Text", fg_color="#2c271c", text_color="#ff9500", font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("text")).pack(fill="x", pady=2)
+        ctk.CTkButton(macro_tb, text="+ Launch App", fg_color="#182d24", text_color=self.accent_green, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("app")).pack(fill="x", pady=2)
+        ctk.CTkButton(macro_tb, text="+ Click Image", fg_color="#2c271c", text_color=self.accent_orange, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("image")).pack(fill="x", pady=2)
+        ctk.CTkButton(macro_tb, text="Clear Steps", fg_color="transparent", border_color="#30363d", border_width=1, text_color=self.text_gray, font=("Helvetica", 10, "bold"), height=24, command=self.clear_inspector_macro_timeline).pack(fill="x", pady=(10, 2))
+
+    # --- Property Inspector Actions ---
+
+    def on_grid_button_clicked(self, r, c):
+        old_r, old_c = self.selected_row, self.selected_col
+        self.selected_row = r
+        self.selected_col = c
+        
+        # Deselect old button highlights
+        if old_r is not None and old_c is not None:
+            old_slot = self.board_slots[old_r][old_c]
+            old_border = self.get_slot_border_color(old_slot['type'])
+            self.grid_buttons[old_r][old_c].configure(border_color=old_border)
+            
+        # Highlight new button border
+        self.grid_buttons[r][c].configure(border_color=self.accent_cyan)
+        self.load_slot_to_inspector(r, c)
+
+    def get_slot_border_color(self, slot_type):
+        if slot_type == "app":
+            return self.accent_green
+        elif slot_type == "mouse":
+            return self.accent_cyan
+        elif slot_type == "image":
+            return self.accent_orange
+        elif slot_type == "macro":
+            return self.accent_purple
+        return "#2b3240"
+
+    def assign_action_to_selected(self, action_type):
+        r, c = self.selected_row, self.selected_col
+        if r is None or c is None:
+            return
+            
+        slot = self.board_slots[r][c]
+        slot['type'] = action_type
+        
+        if action_type == "empty":
+            slot['title'] = ""
+            slot['hotkey'] = set()
+            
+        self.inspector_type_combo.set(self.format_type_name(action_type))
+        self.on_inspector_type_changed(self.format_type_name(action_type))
+        self.save_current_inspector_data()
+        
+    def format_type_name(self, action_type):
+        if action_type == "app": return "Launch App"
+        elif action_type == "mouse": return "Mouse Click"
+        elif action_type == "image": return "Click at Image"
+        elif action_type == "macro": return "Macro Sequence"
+        return "Empty"
+
+    def parse_type_name(self, combo_name):
+        if combo_name == "Launch App": return "app"
+        elif combo_name == "Mouse Click": return "mouse"
+        elif combo_name == "Click at Image": return "image"
+        elif combo_name == "Macro Sequence": return "macro"
+        return "empty"
+
+    def load_slot_to_inspector(self, r, c):
+        slot = self.board_slots[r][c]
+        
+        # Set Header fields
+        self.inspector_title_entry.delete(0, "end")
+        self.inspector_title_entry.insert(0, slot['title'])
+        self.inspector_type_combo.set(self.format_type_name(slot['type']))
+        
+        hk_combo = " + ".join(sorted(list(slot['hotkey']))) if slot['hotkey'] else "None"
+        self.inspector_hotkey_display.configure(text=hk_combo)
+
+        # Hide all inspector sub-frames
+        self.param_empty_frame.pack_forget()
+        self.param_app_frame.pack_forget()
+        self.param_mouse_frame.pack_forget()
+        self.param_image_frame.pack_forget()
+        self.param_macro_frame.pack_forget()
+
+        # Load values into matching parameters sub-frame
+        slot_type = slot['type']
+        if slot_type == "empty":
+            self.param_empty_frame.pack(fill="both", expand=True)
+            
+        elif slot_type == "app":
+            self.app_path_entry.delete(0, "end")
+            self.app_path_entry.insert(0, slot.get('app_path', ''))
+            self.param_app_frame.pack(fill="both", expand=True)
+            
+        elif slot_type == "mouse":
+            self.mouse_x_entry.delete(0, "end")
+            self.mouse_x_entry.insert(0, str(slot.get('mouse_x', 1000)))
+            
+            self.mouse_y_entry.delete(0, "end")
+            self.mouse_y_entry.insert(0, str(slot.get('mouse_y', 850)))
+            
+            self.mouse_click_combo.set(slot.get('click_type', 'Left Click'))
+            
+            glide_enabled = slot.get('glide_enabled', True)
+            if glide_enabled:
+                self.mouse_glide_switch.select()
+                self.mouse_glide_slider.configure(state="normal")
+            else:
+                self.mouse_glide_switch.deselect()
+                self.mouse_glide_slider.configure(state="disabled")
+                
+            glide_dur = slot.get('glide_duration', 0.1)
+            self.mouse_glide_slider.set(glide_dur)
+            self.mouse_glide_lbl.configure(text=f"Duration: {glide_dur:.1f}s")
+            self.param_mouse_frame.pack(fill="both", expand=True)
+            
+        elif slot_type == "image":
+            self.image_path_entry.delete(0, "end")
+            self.image_path_entry.insert(0, slot.get('image_path', ''))
+            
+            self.image_click_combo.set(slot.get('click_type', 'Left Click'))
+            
+            conf_val = slot.get('confidence', 0.8)
+            self.image_confidence_slider.set(conf_val)
+            self.image_confidence_lbl.configure(text=f"Confidence: {conf_val:.2f}")
+            
+            glide_enabled = slot.get('glide_enabled', True)
+            if glide_enabled:
+                self.image_glide_switch.select()
+                self.image_glide_slider.configure(state="normal")
+            else:
+                self.image_glide_switch.deselect()
+                self.image_glide_slider.configure(state="disabled")
+                
+            glide_dur = slot.get('glide_duration', 0.1)
+            self.image_glide_slider.set(glide_dur)
+            self.image_glide_lbl.configure(text=f"Duration: {glide_dur:.1f}s")
+            self.param_image_frame.pack(fill="both", expand=True)
+            
+        elif slot_type == "macro":
+            # Recreate timeline card widgets from steps dictionary data
+            self.clear_timeline_widgets_only()
+            steps = slot.get('steps', [])
+            for step in steps:
+                self.add_sequence_card(step['type'], step)
+            self.param_macro_frame.pack(fill="both", expand=True)
+
+    def on_inspector_type_changed(self, val):
+        r, c = self.selected_row, self.selected_col
+        if r is None or c is None:
+            return
+            
+        slot_type = self.parse_type_name(val)
+        self.board_slots[r][c]['type'] = slot_type
+        
+        # Dynamically switch inspector panels
+        self.load_slot_to_inspector(r, c)
+        self.save_current_inspector_data()
+
+    def save_current_inspector_data(self):
+        r, c = self.selected_row, self.selected_col
+        if r is None or c is None:
+            return
+            
+        slot = self.board_slots[r][c]
+        
+        # Header properties
+        slot['title'] = self.inspector_title_entry.get().strip()
+        slot['type'] = self.parse_type_name(self.inspector_type_combo.get())
+        
+        # Grid button label updates
+        grid_text = slot['title'] if slot['title'] else (slot['type'].upper() if slot['type'] != 'empty' else "")
+        self.grid_buttons[r][c].configure(text=grid_text)
+        self.grid_buttons[r][c].configure(border_color=self.get_slot_border_color(slot['type']) if (r != self.selected_row or c != self.selected_col) else self.accent_cyan)
+
+        # Config properties
+        if slot['type'] == 'app':
+            slot['app_path'] = self.app_path_entry.get().strip()
+            
+        elif slot['type'] == 'mouse':
+            try:
+                slot['mouse_x'] = int(self.mouse_x_entry.get().strip())
+                slot['mouse_y'] = int(self.mouse_y_entry.get().strip())
+            except ValueError:
+                pass
+            slot['click_type'] = self.mouse_click_combo.get()
+            slot['glide_enabled'] = self.mouse_glide_switch.get() == 1
+            slot['glide_duration'] = self.mouse_glide_slider.get()
+            
+        elif slot['type'] == 'image':
+            slot['image_path'] = self.image_path_entry.get().strip()
+            slot['confidence'] = self.image_confidence_slider.get()
+            slot['click_type'] = self.image_click_combo.get()
+            slot['glide_enabled'] = self.image_glide_switch.get() == 1
+            slot['glide_duration'] = self.image_glide_slider.get()
+            
+        elif slot['type'] == 'macro':
+            # Compile current scrollable widgets configuration into slot data steps
+            steps_data = []
+            for action in self.sequence_actions:
+                atype = action['type']
+                step = {'type': atype}
+                
+                if atype == 'mouse':
+                    try:
+                        step['x'] = int(action['x_entry'].get().strip())
+                        step['y'] = int(action['y_entry'].get().strip())
+                    except ValueError:
+                        step['x'], step['y'] = 1000, 850
+                    step['click_type'] = action['click_type_combo'].get()
+                    step['glide_enabled'] = action['glide_switch'].get() == 1
+                    step['glide_duration'] = action['glide_slider'].get()
+                    
+                elif atype == 'delay':
+                    try:
+                        step['value'] = float(action['delay_entry'].get().strip())
+                    except ValueError:
+                        step['value'] = 500.0
+                    step['unit'] = action['unit_combo'].get()
+                    
+                elif atype == 'key':
+                    step['key'] = action['key_entry'].get().strip()
+                    
+                elif atype == 'text':
+                    step['text'] = action['text_entry'].get()
+                elif atype == 'app':
+                    step['app_path'] = action['app_entry'].get().strip()
+                elif atype == 'image':
+                    step['image_path'] = action['image_entry'].get().strip()
+                    step['confidence'] = action['confidence_slider'].get()
+                    step['click_type'] = action['click_type_combo'].get()
+                    step['glide_enabled'] = action['glide_switch'].get() == 1
+                    step['glide_duration'] = action['glide_slider'].get()
+                    
+                steps_data.append(step)
+            slot['steps'] = steps_data
+
+        # Save to local disk
+        self.save_board_data()
+
+    # --- Property Inspector Callback Triggers ---
+
+    def browse_app_path(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("Executable Files", "*.exe"), ("All Files", "*.*")],
+            title="Select Application to Open"
+        )
+        if path:
+            self.app_path_entry.delete(0, "end")
+            self.app_path_entry.insert(0, path)
+            self.save_current_inspector_data()
+
+    def browse_image_path(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.bmp"), ("All Files", "*.*")],
+            title="Select Target Image"
+        )
+        if path:
+            proj_dir = os.path.dirname(self.board_file)
+            try:
+                rel = os.path.relpath(path, proj_dir)
+                if not rel.startswith(".."):
+                    path = rel
+            except ValueError:
+                pass
+            
+            self.image_path_entry.delete(0, "end")
+            self.image_path_entry.insert(0, path)
+            self.save_current_inspector_data()
+
+    def start_slot_image_snipping(self):
+        r, c = self.selected_row, self.selected_col
+        if r is None or c is None:
+            return
+        self.log(f"Entering Screen Snipper for Grid Slot ({r+1}, {c+1}).", self.accent_purple)
+        ScreenSnipper(self, self.on_slot_image_snipped)
+
+    def on_slot_image_snipped(self, cropped_image):
+        if cropped_image is None:
+            self.log("Snipping cancelled.", "#ff453a")
+            return
+            
+        r, c = self.selected_row, self.selected_col
+        if r is None or c is None:
+            return
+            
+        templates_dir = os.path.join(os.path.dirname(self.board_file), "templates")
+        os.makedirs(templates_dir, exist_ok=True)
+        
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"snip_{r+1}_{c+1}_{timestamp}.png"
+        full_path = os.path.join(templates_dir, filename)
+        
+        try:
+            cropped_image.save(full_path, "PNG")
+            rel_path = os.path.join("templates", filename)
+            
+            self.image_path_entry.delete(0, "end")
+            self.image_path_entry.insert(0, rel_path)
+            self.save_current_inspector_data()
+            self.log(f"Image captured and saved to: {rel_path}", self.accent_green)
+        except Exception as e:
+            self.log(f"Failed to save snipped image: {str(e)}", "#ff453a")
+
+    def on_image_glide_switch_toggled(self):
+        if self.image_glide_switch.get():
+            self.image_glide_slider.configure(state="normal")
+        else:
+            self.image_glide_slider.configure(state="disabled")
+        self.save_current_inspector_data()
+
+    def on_image_glide_slider_changed(self, val):
+        self.image_glide_lbl.configure(text=f"Duration: {val:.1f}s")
+        self.save_current_inspector_data()
+
+    def on_image_confidence_slider_changed(self, val):
+        self.image_confidence_lbl.configure(text=f"Confidence: {val:.2f}")
+        self.save_current_inspector_data()
+
+    def on_mouse_glide_switch_toggled(self):
+        if self.mouse_glide_switch.get():
+            self.mouse_glide_slider.configure(state="normal")
+        else:
+            self.mouse_glide_slider.configure(state="disabled")
+        self.save_current_inspector_data()
+
+    def on_mouse_glide_slider_changed(self, val):
+        self.mouse_glide_lbl.configure(text=f"Duration: {val:.1f}s")
+        self.save_current_inspector_data()
+
+    # --- Hotkey Recording for Slots ---
+
+    def start_slot_hotkey_recording(self):
+        if self.is_recording_slot:
+            return
+            
+        r, c = self.selected_row, self.selected_col
+        if r is None or c is None:
+            return
+            
+        self.is_recording_slot = True
+        self.recorded_keys_temp.clear()
+        self.pressed_keys_global.clear()
+        
+        self.inspector_rec_btn.configure(text="Press...", fg_color="#ff453a", hover_color="#e03b31")
+        self.inspector_hotkey_display.configure(text="Waiting...", text_color="#ff453a")
+        self.log(f"Recording global hotkey for Grid Slot ({r+1}, {c+1}). Press combo and release all keys.", self.accent_purple)
+
+    def start_slot_coordinate_picking(self):
+        r, c = self.selected_row, self.selected_col
+        self.log(f"Entering Coordinate Pick Mode for Grid Slot ({r+1}, {c+1}).", self.accent_purple)
+        CoordinatePicker(self, self.on_slot_coordinate_picked)
+
+    def on_slot_coordinate_picked(self, x, y):
+        if x is not None and y is not None:
+            self.mouse_x_entry.delete(0, "end")
+            self.mouse_x_entry.insert(0, str(x))
+            self.mouse_y_entry.delete(0, "end")
+            self.mouse_y_entry.insert(0, str(y))
+            self.save_current_inspector_data()
+            self.log(f"Captured coordinate (X: {x}, Y: {y}) successfully.", self.accent_green)
+        else:
+            self.log("Coordinate picking cancelled.", "#ff453a")
+
+    # --- Inline Macro Timeline Card Managers ---
+
+    def clear_inspector_macro_timeline(self):
+        self.clear_timeline_widgets_only()
+        self.save_current_inspector_data()
+        self.log("Macro sequence timeline cleared.")
+
+    def clear_timeline_widgets_only(self):
+        for action in self.sequence_actions:
+            action['widget'].destroy()
+        self.sequence_actions.clear()
+        if self.macro_placeholder:
+            self.macro_placeholder.pack(pady=40)
+
+    def add_sequence_card(self, action_type, step_data=None):
+        """Creates and appends a card widget into the inspector's macro timeline scrollable panel."""
+        if self.macro_placeholder:
+            self.macro_placeholder.pack_forget()
+            
+        card = ctk.CTkFrame(self.macro_timeline_frame, fg_color="#181c24", corner_radius=8, border_color="#2b3240", border_width=1)
+        
+        # Header Row
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        header.pack(fill="x", padx=8, pady=(4, 2))
+        
+        index_lbl = ctk.CTkLabel(header, text="#0", font=("Helvetica", 10, "bold"), text_color=self.text_gray)
+        index_lbl.pack(side="left", padx=(0, 6))
+        
+        title_colors = {"mouse": self.accent_cyan, "delay": self.accent_purple, "key": self.accent_green, "text": "#ff9500", "app": self.accent_green, "image": self.accent_orange}
+        title_text = {"mouse": "MOUSE", "delay": "DELAY", "key": "KEYPRESS", "text": "TEXT", "app": "LAUNCH APP", "image": "CLICK IMAGE"}
+        
+        type_lbl = ctk.CTkLabel(header, text=title_text[action_type], font=("Helvetica", 10, "bold"), text_color=title_colors[action_type])
+        type_lbl.pack(side="left")
+
+        # Reorder / Delete controllers
+        ctrls = ctk.CTkFrame(header, fg_color="transparent")
+        ctrls.pack(side="right")
+        
+        up_btn = ctk.CTkButton(ctrls, text="▲", width=18, height=18, fg_color="#0a0c10", hover_color="#2b3240", font=("Arial", 8), corner_radius=3)
+        up_btn.pack(side="left", padx=1)
+        
+        down_btn = ctk.CTkButton(ctrls, text="▼", width=18, height=18, fg_color="#0a0c10", hover_color="#2b3240", font=("Arial", 8), corner_radius=3)
+        down_btn.pack(side="left", padx=1)
+        
+        del_btn = ctk.CTkButton(ctrls, text="X", width=18, height=18, fg_color="#ff453a", hover_color="#e03b31", font=("Arial", 8, "bold"), corner_radius=3)
+        del_btn.pack(side="left", padx=(4, 0))
+
+        # Config Parameter row
+        body = ctk.CTkFrame(card, fg_color="transparent")
+        body.pack(fill="x", padx=8, pady=(1, 6))
+        
+        action_data = {
+            'type': action_type, 'widget': card, 'index_lbl': index_lbl, 'up_btn': up_btn, 'down_btn': down_btn, 'del_btn': del_btn
+        }
+
+        if action_type == "mouse":
+            # Compact inputs on one row
+            x_val = str(step_data.get('x', 1000)) if step_data else "1000"
+            y_val = str(step_data.get('y', 850)) if step_data else "850"
+            
+            x_lbl = ctk.CTkLabel(body, text="X:", text_color=self.text_gray, font=("Helvetica", 10))
+            x_lbl.pack(side="left", padx=(0, 1))
+            x_entry = ctk.CTkEntry(body, width=44, height=20, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white, font=("Helvetica", 10))
+            x_entry.insert(0, x_val)
+            x_entry.pack(side="left", padx=(0, 4))
+            x_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+            
+            y_lbl = ctk.CTkLabel(body, text="Y:", text_color=self.text_gray, font=("Helvetica", 10))
+            y_lbl.pack(side="left", padx=(0, 1))
+            y_entry = ctk.CTkEntry(body, width=44, height=20, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white, font=("Helvetica", 10))
+            y_entry.insert(0, y_val)
+            y_entry.pack(side="left", padx=(0, 4))
+            y_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+            
+            pick_btn = ctk.CTkButton(body, text="Pick", width=34, height=20, fg_color=self.accent_purple, hover_color="#a841e0", font=("Helvetica", 10, "bold"), corner_radius=3)
+            pick_btn.pack(side="left", padx=(0, 6))
+            
+            click_type_combo = ctk.CTkOptionMenu(
+                body, values=["Left Click", "Double Left Click", "Right Click", "Middle Click", "Only Move"],
+                fg_color="#0a0c10", button_color="#1c212e", button_hover_color="#2b3240", text_color=self.text_white,
+                dropdown_fg_color="#12161f", font=("Helvetica", 10), width=90, height=20,
+                command=lambda val: self.save_current_inspector_data()
+            )
+            click_type_combo.set(step_data.get('click_type', 'Left Click') if step_data else "Left Click")
+            click_type_combo.pack(side="left", padx=(0, 6))
+            
+            glide_switch = ctk.CTkSwitch(body, text="Glide", text_color=self.text_gray, font=("Helvetica", 9), progress_color=self.accent_cyan, height=16, command=self.save_current_inspector_data)
+            glide_switch.pack(side="left", padx=(0, 4))
+            if step_data is None or step_data.get('glide_enabled', True):
+                glide_switch.select()
+            else:
+                glide_switch.deselect()
+                
+            glide_slider = ctk.CTkSlider(body, from_=0.1, to=2.0, number_of_steps=19, progress_color=self.accent_cyan, button_color=self.accent_cyan, width=50, height=10, command=lambda val: self.save_current_inspector_data())
+            glide_slider.set(step_data.get('glide_duration', 0.1) if step_data else 0.1)
+            glide_slider.pack(side="left")
+
+            action_data.update({
+                'x_entry': x_entry, 'y_entry': y_entry, 'pick_btn': pick_btn, 'click_type_combo': click_type_combo,
+                'glide_switch': glide_switch, 'glide_slider': glide_slider
+            })
+            
+        elif action_type == "delay":
+            delay_val = str(step_data.get('value', 500)) if step_data else "500"
+            
+            delay_lbl = ctk.CTkLabel(body, text="Delay:", text_color=self.text_gray, font=("Helvetica", 10))
+            delay_lbl.pack(side="left", padx=(0, 4))
+            
+            delay_entry = ctk.CTkEntry(body, width=60, height=20, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white, font=("Helvetica", 10))
+            delay_entry.insert(0, delay_val)
+            delay_entry.pack(side="left", padx=(0, 6))
+            delay_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+            
+            unit_combo = ctk.CTkOptionMenu(
+                body, values=["ms", "seconds"], fg_color="#0a0c10", button_color="#1c212e", button_hover_color="#2b3240",
+                text_color=self.text_white, dropdown_fg_color="#12161f", font=("Helvetica", 10), width=70, height=20,
+                command=lambda val: self.save_current_inspector_data()
+            )
+            unit_combo.set(step_data.get('unit', 'ms') if step_data else "ms")
+            unit_combo.pack(side="left")
+            
+            action_data.update({
+                'delay_entry': delay_entry, 'unit_combo': unit_combo
+            })
+            
+        elif action_type == "key":
+            key_val = step_data.get('key', 'F') if step_data else "F"
+            
+            key_lbl = ctk.CTkLabel(body, text="Key:", text_color=self.text_gray, font=("Helvetica", 10))
+            key_lbl.pack(side="left", padx=(0, 4))
+            
+            key_entry = ctk.CTkEntry(body, width=80, height=20, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white, font=("Helvetica", 10))
+            key_entry.insert(0, key_val)
+            key_entry.pack(side="left", padx=(0, 10))
+            key_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+            
+            rec_btn = ctk.CTkButton(body, text="Record", width=60, height=20, fg_color="#0a0c10", hover_color="#2b3240", border_color="#30363d", border_width=1, text_color=self.text_white, font=("Helvetica", 10, "bold"), corner_radius=4)
+            rec_btn.pack(side="left")
+            
+            action_data.update({
+                'key_entry': key_entry, 'rec_btn': rec_btn
+            })
+            
+        elif action_type == "text":
+            text_val = step_data.get('text', 'Hello ClickPulse') if step_data else "Hello ClickPulse"
+            
+            text_lbl = ctk.CTkLabel(body, text="Type:", text_color=self.text_gray, font=("Helvetica", 10))
+            text_lbl.pack(side="left", padx=(0, 4))
+            
+            text_entry = ctk.CTkEntry(body, height=20, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white, font=("Helvetica", 10))
+            text_entry.insert(0, text_val)
+            text_entry.pack(side="left", fill="x", expand=True)
+            text_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+            
+            action_data.update({
+                'text_entry': text_entry
+            })
+            
+        elif action_type == "app":
+            app_val = step_data.get('app_path', '') if step_data else ""
+            
+            app_lbl = ctk.CTkLabel(body, text="Path:", text_color=self.text_gray, font=("Helvetica", 10))
+            app_lbl.pack(side="left", padx=(0, 4))
+            
+            app_entry = ctk.CTkEntry(body, height=20, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white, font=("Helvetica", 10))
+            app_entry.insert(0, app_val)
+            app_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+            app_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+            
+            browse_btn = ctk.CTkButton(body, text="Browse", width=50, height=20, fg_color=self.accent_purple, hover_color="#a841e0", font=("Helvetica", 10, "bold"), corner_radius=3)
+            browse_btn.pack(side="right")
+            
+            action_data.update({
+                'app_entry': app_entry, 'browse_btn': browse_btn
+            })
+
+        elif action_type == "image":
+            image_val = step_data.get('image_path', '') if step_data else ""
+            conf_val = step_data.get('confidence', 0.8) if step_data else 0.8
+            click_type_val = step_data.get('click_type', 'Left Click') if step_data else "Left Click"
+            glide_enabled = step_data.get('glide_enabled', True) if step_data else True
+            glide_duration = step_data.get('glide_duration', 0.1) if step_data else 0.1
+            
+            row1 = ctk.CTkFrame(body, fg_color="transparent")
+            row1.pack(fill="x", pady=(0, 2))
+            
+            img_lbl = ctk.CTkLabel(row1, text="Img:", text_color=self.text_gray, font=("Helvetica", 10))
+            img_lbl.pack(side="left", padx=(0, 4))
+            
+            image_entry = ctk.CTkEntry(row1, height=20, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white, font=("Helvetica", 10))
+            image_entry.insert(0, image_val)
+            image_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+            image_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+            
+            browse_btn = ctk.CTkButton(row1, text="Browse", width=44, height=20, fg_color="#1a2536", hover_color="#24344d", text_color=self.accent_cyan, font=("Helvetica", 9, "bold"), corner_radius=3)
+            browse_btn.pack(side="left", padx=(0, 2))
+            
+            snip_btn = ctk.CTkButton(row1, text="Snip", width=36, height=20, fg_color="#2c271c", hover_color="#3d3727", text_color="#ff9500", font=("Helvetica", 9, "bold"), corner_radius=3)
+            snip_btn.pack(side="left")
+            
+            row2 = ctk.CTkFrame(body, fg_color="transparent")
+            row2.pack(fill="x", pady=(2, 0))
+            
+            click_type_combo = ctk.CTkOptionMenu(
+                row2, values=["Left Click", "Double Left Click", "Right Click", "Middle Click", "Only Move"],
+                fg_color="#0a0c10", button_color="#1c212e", button_hover_color="#2b3240", text_color=self.text_white,
+                dropdown_fg_color="#12161f", font=("Helvetica", 10), width=90, height=20,
+                command=lambda val: self.save_current_inspector_data()
+            )
+            click_type_combo.set(click_type_val)
+            click_type_combo.pack(side="left", padx=(0, 6))
+            
+            conf_lbl = ctk.CTkLabel(row2, text=f"Conf: {conf_val:.2f}", text_color=self.text_gray, font=("Helvetica", 9))
+            conf_lbl.pack(side="left", padx=(0, 2))
+            
+            confidence_slider = ctk.CTkSlider(row2, from_=0.5, to=1.0, number_of_steps=50, progress_color="#ff9500", button_color="#ff9500", width=45, height=10)
+            confidence_slider.set(conf_val)
+            confidence_slider.pack(side="left", padx=(0, 6))
+            confidence_slider.configure(command=lambda val, lbl=conf_lbl: [lbl.configure(text=f"Conf: {val:.2f}"), self.save_current_inspector_data()])
+            
+            glide_switch = ctk.CTkSwitch(row2, text="Glide", text_color=self.text_gray, font=("Helvetica", 9), progress_color=self.accent_cyan, height=16, command=self.save_current_inspector_data)
+            glide_switch.pack(side="left", padx=(0, 2))
+            if glide_enabled:
+                glide_switch.select()
+            else:
+                glide_switch.deselect()
+                
+            glide_slider = ctk.CTkSlider(row2, from_=0.1, to=2.0, number_of_steps=19, progress_color=self.accent_cyan, button_color=self.accent_cyan, width=40, height=10, command=lambda val: self.save_current_inspector_data())
+            glide_slider.set(glide_duration)
+            glide_slider.pack(side="left")
+
+            action_data.update({
+                'image_entry': image_entry, 'browse_btn': browse_btn, 'snip_btn': snip_btn,
+                'click_type_combo': click_type_combo, 'confidence_slider': confidence_slider,
+                'glide_switch': glide_switch, 'glide_slider': glide_slider, 'conf_lbl': conf_lbl
+            })
+
+        self.sequence_actions.append(action_data)
+        self.repack_inspector_timeline()
+        if step_data is None:
+            self.save_current_inspector_data()
+            self.log(f"Added sequence {action_type.upper()} card.")
+
+    def repack_inspector_timeline(self):
+        """Sorts and repacks all timeline widgets inside property inspector scrollable panel."""
+        for action in self.sequence_actions:
+            action['widget'].pack_forget()
+            
+        if self.macro_placeholder:
+            self.macro_placeholder.pack_forget()
+            
+        if len(self.sequence_actions) == 0:
+            self.macro_placeholder.pack(pady=40)
+            return
+            
+        for idx, action in enumerate(self.sequence_actions):
+            action['index_lbl'].configure(text=f"#{idx+1}")
+            
+            # Rebind indices in callbacks
+            action['up_btn'].configure(command=lambda i=idx: self.move_card_up(i))
+            action['down_btn'].configure(command=lambda i=idx: self.move_card_down(i))
+            action['del_btn'].configure(command=lambda i=idx: self.delete_card(i))
+            
+            if action['type'] == 'mouse':
+                action['pick_btn'].configure(command=lambda i=idx: self.start_card_coordinate_picking(i))
+            elif action['type'] == 'key':
+                action['rec_btn'].configure(command=lambda i=idx: self.start_card_key_recording(i))
+            elif action['type'] == 'app':
+                action['browse_btn'].configure(command=lambda i=idx: self.start_card_app_browsing(i))
+            elif action['type'] == 'image':
+                action['browse_btn'].configure(command=lambda i=idx: self.start_card_image_browsing(i))
+                action['snip_btn'].configure(command=lambda i=idx: self.start_card_image_snipping(i))
+                
+            action['widget'].pack(fill="x", padx=5, pady=4)
+
+    def move_card_up(self, idx):
+        if idx <= 0 or idx >= len(self.sequence_actions):
+            return
+        self.sequence_actions[idx], self.sequence_actions[idx-1] = self.sequence_actions[idx-1], self.sequence_actions[idx]
+        self.repack_inspector_timeline()
+        self.save_current_inspector_data()
+
+    def move_card_down(self, idx):
+        if idx < 0 or idx >= len(self.sequence_actions) - 1:
+            return
+        self.sequence_actions[idx], self.sequence_actions[idx+1] = self.sequence_actions[idx+1], self.sequence_actions[idx]
+        self.repack_inspector_timeline()
+        self.save_current_inspector_data()
+
+    def delete_card(self, idx):
+        if idx < 0 or idx >= len(self.sequence_actions):
+            return
+        action = self.sequence_actions.pop(idx)
+        action['widget'].destroy()
+        self.repack_inspector_timeline()
+        self.save_current_inspector_data()
+
+    def start_card_coordinate_picking(self, card_idx):
+        self.log(f"Entering Coordinate Pick Mode for macro step #{card_idx + 1}.", self.accent_purple)
+        CoordinatePicker(self, lambda x, y: self.on_card_coordinate_picked(card_idx, x, y))
+
+    def on_card_coordinate_picked(self, card_idx, x, y):
+        if x is not None and y is not None:
+            if card_idx < len(self.sequence_actions):
+                action = self.sequence_actions[card_idx]
+                action['x_entry'].delete(0, "end")
+                action['x_entry'].insert(0, str(x))
+                action['y_entry'].delete(0, "end")
+                action['y_entry'].insert(0, str(y))
+                self.save_current_inspector_data()
+                self.log(f"Captured coordinate for step #{card_idx+1}: ({x}, {y})", self.accent_green)
+        else:
+            self.log(f"Coordinate picker for step #{card_idx+1} cancelled.", "#ff453a")
+
+    def start_card_app_browsing(self, card_idx):
+        path = filedialog.askopenfilename(
+            filetypes=[("Executable Files", "*.exe"), ("All Files", "*.*")],
+            title=f"Select App for Step #{card_idx + 1}"
+        )
+        if path:
+            if card_idx < len(self.sequence_actions):
+                action = self.sequence_actions[card_idx]
+                action['app_entry'].delete(0, "end")
+                action['app_entry'].insert(0, path)
+                self.save_current_inspector_data()
+                self.log(f"Selected application path for step #{card_idx+1}: {path}", self.accent_green)
+
+    def start_card_image_browsing(self, card_idx):
+        path = filedialog.askopenfilename(
+            filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.bmp"), ("All Files", "*.*")],
+            title=f"Select Image for Step #{card_idx + 1}"
+        )
+        if path:
+            proj_dir = os.path.dirname(self.board_file)
+            try:
+                rel = os.path.relpath(path, proj_dir)
+                if not rel.startswith(".."):
+                    path = rel
+            except ValueError:
+                pass
+            if card_idx < len(self.sequence_actions):
+                action = self.sequence_actions[card_idx]
+                action['image_entry'].delete(0, "end")
+                action['image_entry'].insert(0, path)
+                self.save_current_inspector_data()
+                self.log(f"Selected image path for step #{card_idx+1}: {path}", self.accent_green)
+
+    def start_card_image_snipping(self, card_idx):
+        if card_idx < len(self.sequence_actions):
+            self.log(f"Entering Screen Snipper for Step #{card_idx+1}.", self.accent_purple)
+            ScreenSnipper(self, lambda img: self.on_card_image_snipped(card_idx, img))
+
+    def on_card_image_snipped(self, card_idx, cropped_image):
+        if cropped_image is None:
+            self.log(f"Snipping for Step #{card_idx+1} cancelled.", "#ff453a")
+            return
+            
+        r, c = self.selected_row, self.selected_col
+        if r is None or c is None:
+            return
+            
+        templates_dir = os.path.join(os.path.dirname(self.board_file), "templates")
+        os.makedirs(templates_dir, exist_ok=True)
+        
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"snip_{r+1}_{c+1}_step{card_idx+1}_{timestamp}.png"
+        full_path = os.path.join(templates_dir, filename)
+        
+        try:
+            cropped_image.save(full_path, "PNG")
+            rel_path = os.path.join("templates", filename)
+            
+            if card_idx < len(self.sequence_actions):
+                action = self.sequence_actions[card_idx]
+                action['image_entry'].delete(0, "end")
+                action['image_entry'].insert(0, rel_path)
+                self.save_current_inspector_data()
+                self.log(f"Step #{card_idx+1}: Image captured and saved to: {rel_path}", self.accent_green)
+        except Exception as e:
+            self.log(f"Failed to save snipped image: {str(e)}", "#ff453a")
+
+    def start_card_key_recording(self, card_idx):
+        if self.recording_card_idx is not None:
+            return
+        self.recording_card_idx = card_idx
+        action = self.sequence_actions[card_idx]
+        action['rec_btn'].configure(text="Press...", fg_color="#ff453a", hover_color="#e03b31")
+        self.log(f"Recording keystroke for Step #{card_idx+1}. Press any standard key or F1-F12 globally.", self.accent_purple)
+
+    # --- Trigger Routines ---
+
+    def trigger_selected_slot_async(self):
+        r, c = self.selected_row, self.selected_col
+        if r is None or c is None:
+            return
+        self.execute_slot_action_async(r, c)
+
+    def execute_slot_action_async(self, r, c):
+        threading.Thread(target=self.run_slot_action, args=(r, c), daemon=True).start()
+
+    def run_slot_action(self, r, c):
+        slot = self.board_slots[r][c]
+        slot_type = slot['type']
+        
+        if slot_type == 'empty':
+            return
+            
+        self.log(f"Executing Grid Slot ({r+1}, {c+1}): '{slot['title'] or slot_type.upper()}'")
+        
+        # Prevent concurrent triggers
+        if not self.sequence_lock.acquire(blocking=False):
+            self.log("Another deck automation is currently executing. Denied.", "#ff9500")
+            return
+            
+        try:
+            if slot_type == 'app':
+                path = slot.get('app_path', '').strip()
+                if not path:
+                    self.log("Application path is blank.", "#ff453a")
+                    return
+                try:
+                    os.startfile(path)
+                    self.log(f"Successfully launched: {path}", self.accent_green)
+                except Exception as ex:
+                    self.log(f"Failed launching app: {str(ex)}", "#ff453a")
+                    
+            elif slot_type == 'mouse':
+                x = slot.get('mouse_x', 1000)
+                y = slot.get('mouse_y', 850)
+                click_type = slot.get('click_type', 'Left Click')
+                glide_enabled = slot.get('glide_enabled', True)
+                glide_duration = slot.get('glide_duration', 0.1) if glide_enabled else 0.0
+                
+                # Glide execution
+                start_x, start_y = self.mouse_controller.position
+                if glide_duration > 0:
+                    steps = int(glide_duration * 120)
+                    if steps == 0: steps = 1
+                    dt = glide_duration / steps
+                    for step in range(1, steps + 1):
+                        t = step / steps
+                        if t < 0.5:
+                            ease_t = 4 * t * t * t
+                        else:
+                            ease_t = 1 - ((-2 * t + 2) ** 3) / 2
+                        curr_x = start_x + (x - start_x) * ease_t
+                        curr_y = start_y + (y - start_y) * ease_t
+                        self.mouse_controller.position = (int(curr_x), int(curr_y))
+                        time.sleep(dt)
+                else:
+                    self.mouse_controller.position = (x, y)
+                
+                time.sleep(0.03)  # Synchronization
+                
+                if click_type == "Left Click":
+                    self.mouse_controller.click(pynput_mouse.Button.left, 1)
+                elif click_type == "Double Left Click":
+                    self.mouse_controller.click(pynput_mouse.Button.left, 2)
+                elif click_type == "Right Click":
+                    self.mouse_controller.click(pynput_mouse.Button.right, 1)
+                elif click_type == "Middle Click":
+                    self.mouse_controller.click(pynput_mouse.Button.middle, 1)
+                
+                self.log(f"Cursor clicked successfully at ({x}, {y}).", self.accent_green)
+                
+            elif slot_type == 'image':
+                image_path = slot.get('image_path', '').strip()
+                confidence = slot.get('confidence', 0.8)
+                click_type = slot.get('click_type', 'Left Click')
+                glide_enabled = slot.get('glide_enabled', True)
+                glide_duration = slot.get('glide_duration', 0.1) if glide_enabled else 0.0
+                
+                coords = self.locate_image_on_screen(image_path, confidence)
+                if coords is None:
+                    self.log(f"Failed to locate image on screen: {image_path}", "#ff453a")
+                else:
+                    x, y = coords
+                    # Glide execution
+                    start_x, start_y = self.mouse_controller.position
+                    if glide_duration > 0:
+                        steps = int(glide_duration * 120)
+                        if steps == 0: steps = 1
+                        dt = glide_duration / steps
+                        for step in range(1, steps + 1):
+                            t = step / steps
+                            if t < 0.5:
+                                ease_t = 4 * t * t * t
+                            else:
+                                ease_t = 1 - ((-2 * t + 2) ** 3) / 2
+                            curr_x = start_x + (x - start_x) * ease_t
+                            curr_y = start_y + (y - start_y) * ease_t
+                            self.mouse_controller.position = (int(curr_x), int(curr_y))
+                            time.sleep(dt)
+                    else:
+                        self.mouse_controller.position = (x, y)
+                    
+                    time.sleep(0.03) # Synchronization
+                    
+                    if click_type == "Left Click":
+                        self.mouse_controller.click(pynput_mouse.Button.left, 1)
+                    elif click_type == "Double Left Click":
+                        self.mouse_controller.click(pynput_mouse.Button.left, 2)
+                    elif click_type == "Right Click":
+                        self.mouse_controller.click(pynput_mouse.Button.right, 1)
+                    elif click_type == "Middle Click":
+                        self.mouse_controller.click(pynput_mouse.Button.middle, 1)
+                    
+                    self.log(f"Located image and clicked successfully at ({x}, {y}).", self.accent_green)
+                    
+            elif slot_type == 'macro':
+                steps = slot.get('steps', [])
+                if not steps:
+                    self.log("Macro sequence timeline is empty.", "#ff9500")
+                    return
+                
+                self.log("Starting macro sequence...", self.accent_purple)
+                for step_idx, step in enumerate(steps):
+                    stype = step.get('type')
+                    
+                    if stype == 'mouse':
+                        x = step.get('x', 1000)
+                        y = step.get('y', 850)
+                        click_type = step.get('click_type', 'Left Click')
+                        glide_enabled = step.get('glide_enabled', True)
+                        glide_duration = step.get('glide_duration', 0.1) if glide_enabled else 0.0
+                        
+                        start_x, start_y = self.mouse_controller.position
+                        if glide_duration > 0:
+                            steps_count = int(glide_duration * 120)
+                            if steps_count == 0: steps_count = 1
+                            dt = glide_duration / steps_count
+                            for step_s in range(1, steps_count + 1):
+                                t = step_s / steps_count
+                                if t < 0.5:
+                                    ease_t = 4 * t * t * t
+                                else:
+                                    ease_t = 1 - ((-2 * t + 2) ** 3) / 2
+                                curr_x = start_x + (x - start_x) * ease_t
+                                curr_y = start_y + (y - start_y) * ease_t
+                                self.mouse_controller.position = (int(curr_x), int(curr_y))
+                                time.sleep(dt)
+                        else:
+                            self.mouse_controller.position = (x, y)
+                            
+                        time.sleep(0.03)
+                        
+                        if click_type == "Left Click":
+                            self.mouse_controller.click(pynput_mouse.Button.left, 1)
+                        elif click_type == "Double Left Click":
+                            self.mouse_controller.click(pynput_mouse.Button.left, 2)
+                        elif click_type == "Right Click":
+                            self.mouse_controller.click(pynput_mouse.Button.right, 1)
+                        elif click_type == "Middle Click":
+                            self.mouse_controller.click(pynput_mouse.Button.middle, 1)
+                            
+                    elif stype == 'delay':
+                        val = step.get('value', 500)
+                        unit = step.get('unit', 'ms')
+                        sleep_time = val / 1000.0 if unit == 'ms' else val
+                        time.sleep(sleep_time)
+                        
+                    elif stype == 'key':
+                        key_val = step.get('key', 'F')
+                        if key_val:
+                            if key_val in SPECIAL_KEYS_MAP:
+                                key_obj = SPECIAL_KEYS_MAP[key_val]
+                            else:
+                                key_obj = pynput_keyboard.KeyCode.from_char(key_val.lower())
+                            self.keyboard_controller.press(key_obj)
+                            time.sleep(0.05)
+                            self.keyboard_controller.release(key_obj)
+                            
+                    elif stype == 'text':
+                        text_val = step.get('text', '')
+                        if text_val:
+                            self.keyboard_controller.type(text_val)
+                            
+                    elif stype == 'app':
+                        app_path = step.get('app_path', '').strip()
+                        if app_path:
+                            try:
+                                os.startfile(app_path)
+                            except Exception as ex:
+                                self.log(f"Failed to launch app in sequence: {str(ex)}", "#ff453a")
+                                
+                    elif stype == 'image':
+                        image_path = step.get('image_path', '').strip()
+                        confidence = step.get('confidence', 0.8)
+                        click_type = step.get('click_type', 'Left Click')
+                        glide_enabled = step.get('glide_enabled', True)
+                        glide_duration = step.get('glide_duration', 0.1) if glide_enabled else 0.0
+                        
+                        coords = self.locate_image_on_screen(image_path, confidence)
+                        if coords is None:
+                            self.log(f"Macro step: failed to locate image: {image_path}", "#ff453a")
+                        else:
+                            x, y = coords
+                            start_x, start_y = self.mouse_controller.position
+                            if glide_duration > 0:
+                                steps_count = int(glide_duration * 120)
+                                if steps_count == 0: steps_count = 1
+                                dt = glide_duration / steps_count
+                                for step_s in range(1, steps_count + 1):
+                                    t = step_s / steps_count
+                                    if t < 0.5:
+                                        ease_t = 4 * t * t * t
+                                    else:
+                                        ease_t = 1 - ((-2 * t + 2) ** 3) / 2
+                                    curr_x = start_x + (x - start_x) * ease_t
+                                    curr_y = start_y + (y - start_y) * ease_t
+                                    self.mouse_controller.position = (int(curr_x), int(curr_y))
+                                    time.sleep(dt)
+                            else:
+                                self.mouse_controller.position = (x, y)
+                                
+                            time.sleep(0.03)
+                            
+                            if click_type == "Left Click":
+                                self.mouse_controller.click(pynput_mouse.Button.left, 1)
+                            elif click_type == "Double Left Click":
+                                self.mouse_controller.click(pynput_mouse.Button.left, 2)
+                            elif click_type == "Right Click":
+                                self.mouse_controller.click(pynput_mouse.Button.right, 1)
+                            elif click_type == "Middle Click":
+                                self.mouse_controller.click(pynput_mouse.Button.middle, 1)
+                            
+                            self.log(f"Macro step: located image and clicked successfully at ({x}, {y}).", self.accent_green)
+                            
+                    time.sleep(0.02)
+                    
+                self.log("Macro sequence completed successfully.", self.accent_green)
+                
+        except Exception as e:
+            self.log(f"Sequence macro exception: {str(e)}", "#ff453a")
+        finally:
+            self.sequence_lock.release()
+
+    # --- Keyboard listener inputs routing ---
+
+    def global_on_press(self, key):
+        key_name = self.normalize_key_name(key)
+        
+        # 1. Macro Timeline step recording
+        if self.recording_card_idx is not None:
+            if key_name in ["Ctrl", "Alt", "Shift", "Win"]:
+                return
+            card_idx = self.recording_card_idx
+            self.recording_card_idx = None
+            
+            if card_idx < len(self.sequence_actions):
+                action = self.sequence_actions[card_idx]
+                action['key_entry'].delete(0, "end")
+                action['key_entry'].insert(0, key_name)
+                
+                self.after(0, lambda: action['rec_btn'].configure(text="Record", fg_color="#0a0c10", hover_color="#2b3240"))
+                self.save_current_inspector_data()
+                self.log(f"Step #{card_idx + 1}: Recorded key '{key_name}'", self.accent_green)
+            return
+
+        # 2. Main Slot Hotkey recording
+        if self.is_recording_slot:
+            self.pressed_keys_global.add(key_name)
+            self.recorded_keys_temp.add(key_name)
+            
+            combo_str = " + ".join(sorted(list(self.recorded_keys_temp)))
+            self.after(0, lambda: self.inspector_hotkey_display.configure(text=combo_str))
+            return
+
+        # 3. Global hotkey trigger monitoring
+        self.pressed_keys_global.add(key_name)
+        
+        current_time = time.time()
+        # Iterate over all 32 buttons
+        for r in range(4):
+            for c in range(8):
+                slot = self.board_slots[r][c]
+                if slot['type'] != 'empty' and slot['hotkey']:
+                    if slot['hotkey'].issubset(self.pressed_keys_global):
+                        # Debounce 400ms per trigger event
+                        if current_time - self.last_triggered_time > 0.4:
+                            self.last_triggered_time = current_time
+                            self.log(f"Global Hotkey Triggered for Slot ({r+1}, {c+1}): {' + '.join(sorted(list(slot['hotkey'])))}", self.accent_purple)
+                            self.execute_slot_action_async(r, c)
+
+    def global_on_release(self, key):
+        key_name = self.normalize_key_name(key)
+        
+        if key_name in self.pressed_keys_global:
+            self.pressed_keys_global.remove(key_name)
+            
+        if self.is_recording_slot:
+            if len(self.pressed_keys_global) == 0:
+                self.is_recording_slot = False
+                
+                r, c = self.selected_row, self.selected_col
+                if r is not None and c is not None:
+                    slot = self.board_slots[r][c]
+                    if len(self.recorded_keys_temp) > 0:
+                        slot['hotkey'] = set(self.recorded_keys_temp)
+                        combo_str = " + ".join(sorted(list(slot['hotkey'])))
+                        self.after(0, lambda: self.inspector_hotkey_display.configure(text=combo_str, text_color=self.accent_purple))
+                        self.log(f"Registered hotkey for Grid Slot ({r+1}, {c+1}): {combo_str}", self.accent_green)
+                    else:
+                        slot['hotkey'] = set()
+                        self.after(0, lambda: self.inspector_hotkey_display.configure(text="None", text_color=self.accent_purple))
+                        self.log("Hotkey cleared.", "#ff453a")
+                        
+                    self.save_board_data()
+                
+                self.after(0, lambda: self.inspector_rec_btn.configure(text="Record", fg_color="#1c212e", hover_color="#2b3240"))
+
+    def normalize_key_name(self, key):
+        if hasattr(key, 'char') and key.char is not None:
+            if 32 <= ord(key.char) < 127:
+                return key.char.upper()
+                
+        if hasattr(key, 'name') and key.name is not None:
+            name = key.name.lower()
+            if name.startswith('ctrl'):
+                return 'Ctrl'
+            elif name.startswith('alt'):
+                return 'Alt'
+            elif name.startswith('shift'):
+                return 'Shift'
+            elif name.startswith('cmd') or name.startswith('win'):
+                return 'Win'
+            elif name == 'space':
+                return 'Space'
+            elif name == 'enter':
+                return 'Enter'
+            elif name == 'esc':
+                return 'Esc'
+            else:
+                if name.startswith('f') and len(name) > 1:
+                    return name.upper()
+                return name.capitalize()
+                
+        vk = getattr(key, 'vk', None)
+        if vk is not None:
+            if 65 <= vk <= 90:
+                return chr(vk)
+            elif 48 <= vk <= 57:
+                return chr(vk)
+            elif 96 <= vk <= 105:
+                return f"Num_{vk - 96}"
+            return f"Key_{vk}"
+            
+        return str(key)
+
+    def log(self, message, color_tag=None):
+        """Thread-safe method to append timestamps and logs to the textbox."""
+        timestamp = time.strftime("[%H:%M:%S]")
+        log_line = f"{timestamp} {message}\n"
+        
+        def do_log():
+            if not hasattr(self, 'log_text') or self.log_text is None:
+                # Fallback to standard console print if UI is not fully created yet
+                print(log_line.strip())
+                return
+                
+            self.log_text.configure(state="normal")
+            
+            text_content = self.log_text.get("1.0", "end-1c")
+            if len(text_content.split('\n')) > 200:
+                self.log_text.delete("1.0", "30.0")
+                
+            self.log_text.insert("end", log_line)
+            self.log_text.see("end")
+            self.log_text.configure(state="disabled")
+            
+        self.after(0, do_log)
+
+    def locate_image_on_screen(self, image_path, confidence_threshold=0.8):
+        """Searches the screen for the target image using OpenCV template matching.
+        Returns (x, y) center coordinates if found, else None.
+        """
+        if not OPENCV_AVAILABLE:
+            self.log("Error: OpenCV and Pillow (PIL) are required for image recognition. Install them first.", "#ff453a")
+            return None
+            
+        try:
+            # Check if relative to app folder or check if filename only in a templates/ subdir
+            possible_paths = [
+                image_path,
+                os.path.join(os.path.dirname(self.board_file), image_path),
+                os.path.join(os.path.dirname(self.board_file), "templates", image_path)
+            ]
+            actual_path = None
+            for p in possible_paths:
+                if os.path.exists(p):
+                    actual_path = p
+                    break
+            if not actual_path:
+                self.log(f"Image file not found: {image_path}", "#ff453a")
+                return None
+            image_path = actual_path
+
+            # Take screenshot of all screens
+            screenshot = ImageGrab.grab(all_screens=True)
+            screenshot_np = np.array(screenshot)
+            screenshot_cv = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
+            
+            # Read template image via PIL to support unicode paths and clean format conversion
+            from PIL import Image
+            template_img = Image.open(image_path)
+            template_np = np.array(template_img)
+            
+            # Convert template to OpenCV format
+            if len(template_np.shape) == 3:
+                if template_np.shape[2] == 4:
+                    template_cv = cv2.cvtColor(template_np, cv2.COLOR_RGBA2BGR)
+                else:
+                    template_cv = cv2.cvtColor(template_np, cv2.COLOR_RGB2BGR)
+            else:
+                template_cv = cv2.cvtColor(template_np, cv2.COLOR_GRAY2BGR)
+                
+            if template_cv is None:
+                self.log(f"Error: Could not read template image from: {image_path}", "#ff453a")
+                return None
+                
+            h_scr, w_scr = screenshot_cv.shape[:2]
+            h_tpl, w_tpl = template_cv.shape[:2]
+            
+            if h_tpl > h_scr or w_tpl > w_scr:
+                self.log("Error: Target image is larger than the screen size.", "#ff453a")
+                return None
+                
+            # Perform template matching
+            res = cv2.matchTemplate(screenshot_cv, template_cv, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+            
+            if max_val >= confidence_threshold:
+                match_x = max_loc[0] + w_tpl // 2
+                match_y = max_loc[1] + h_tpl // 2
+                return (match_x, match_y)
+            else:
+                self.log(f"Image match confidence too low: max={max_val:.2f}, req={confidence_threshold:.2f}", "#ff9500")
+                return None
+        except Exception as e:
+            self.log(f"Image recognition error: {str(e)}", "#ff453a")
+            return None
+
+    def clear_logs(self):
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
+        self.log("Logs cleared.")
+
+if __name__ == "__main__":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except:
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDPIAware()
+        except:
+            pass
+            
+    app = ClickPulseApp()
+    app.mainloop()
