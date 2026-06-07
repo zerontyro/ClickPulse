@@ -1567,7 +1567,7 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.recorded_events.pop()
                 
             if self.recorded_events:
-                self.after(0, lambda: self.add_sequence_card("recorded", {'events': self.recorded_events}))
+                self.after(0, lambda: self.add_sequence_card("recorded", {'events': self.recorded_events}, save=True))
                 self.after(0, lambda: self.log(f"Recording completed! Added Recorded Session card ({len(self.recorded_events)} events).", self.accent_green))
             else:
                 self.after(0, lambda: self.log("Recording cancelled: No events captured.", "#ff9500"))
@@ -1599,7 +1599,7 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         if self.macro_placeholder:
             self.macro_placeholder.pack(pady=40)
 
-    def add_sequence_card(self, action_type, step_data=None):
+    def add_sequence_card(self, action_type, step_data=None, save=False):
         """Creates and appends a card widget into the inspector's macro timeline scrollable panel."""
         if self.macro_placeholder:
             self.macro_placeholder.pack_forget()
@@ -1858,9 +1858,10 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
         self.sequence_actions.append(action_data)
         self.repack_inspector_timeline()
-        if step_data is None:
+        if step_data is None or save:
             self.save_current_inspector_data()
-            self.log(f"Added sequence {action_type.upper()} card.")
+            if step_data is None:
+                self.log(f"Added sequence {action_type.upper()} card.")
 
     def repack_inspector_timeline(self):
         """Sorts and repacks all timeline widgets inside property inspector scrollable panel."""
