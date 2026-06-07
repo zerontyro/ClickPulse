@@ -265,8 +265,11 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.accent_purple = "#bf5af2"
         self.accent_orange = "#ff9500"
         self.accent_pink = "#ff5efb"
+        self.accent_gold = "#ffd60a"
         self.text_white = "#ffffff"
         self.text_gray = "#8b949e"
+        
+        self.button_to_pos = {}
         
         self.configure(fg_color=self.bg_color)
         
@@ -475,6 +478,14 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     command=lambda row=r, col=c: self.on_grid_button_clicked(row, col)
                 )
                 btn.grid(row=r, column=c, padx=6, pady=6)
+                
+                self.button_to_pos[btn] = (r, c)
+                canvas = btn._canvas
+                self.button_to_pos[canvas] = (r, c)
+                canvas.bind("<Button-1>", lambda event, row=r, col=c: self.start_grid_drag(event, row, col), add="+")
+                canvas.bind("<B1-Motion>", self.grid_drag_motion, add="+")
+                canvas.bind("<ButtonRelease-1>", self.end_grid_drag, add="+")
+                
                 row_btns.append(btn)
             self.grid_buttons.append(row_btns)
 
@@ -532,6 +543,73 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.log_text = ctk.CTkTextbox(self.log_container, fg_color="#06080b", border_color="#1f242e", border_width=1, text_color="#00ff88", font=("Consolas", 11), corner_radius=8, height=100)
         self.log_text.pack(fill="both", expand=True, pady=(5, 0))
         self.log_text.configure(state="disabled")
+
+    # --- Grid Drag-and-Drop Methods ---
+
+    def start_grid_drag(self, event, row, col):
+        self.drag_src_row = row
+        self.drag_src_col = col
+        self.drag_start_x = event.x_root
+        self.drag_start_y = event.y_root
+        self.is_dragging_grid = False
+
+    def grid_drag_motion(self, event):
+        if not hasattr(self, 'drag_start_x'):
+            return
+        dx = abs(event.x_root - self.drag_start_x)
+        dy = abs(event.y_root - self.drag_start_y)
+        # 8-pixel threshold to start drag
+        if dx > 8 or dy > 8:
+            if not getattr(self, 'is_dragging_grid', False):
+                self.is_dragging_grid = True
+                self.config(cursor="hand2")
+                self.log(f"Dragging grid slot: Row {self.drag_src_row + 1} Col {self.drag_src_col + 1}...")
+
+    def end_grid_drag(self, event):
+        self.config(cursor="")
+        if not getattr(self, 'is_dragging_grid', False):
+            # Regular click selection
+            self.on_grid_button_clicked(self.drag_src_row, self.drag_src_col)
+            return
+
+        self.is_dragging_grid = False
+        target_widget = self.winfo_containing(event.x_root, event.y_root)
+        if not target_widget:
+            return
+
+        target_pos = self.find_grid_button_from_widget(target_widget)
+        if target_pos:
+            tr, tc = target_pos
+            if tr == self.drag_src_row and tc == self.drag_src_col:
+                return # Dropped on self
+            self.move_or_swap_slots(self.drag_src_row, self.drag_src_col, tr, tc)
+
+    def find_grid_button_from_widget(self, widget):
+        curr = widget
+        while curr:
+            if curr in self.button_to_pos:
+                return self.button_to_pos[curr]
+            curr = curr.master if hasattr(curr, "master") else None
+        return None
+
+    def move_or_swap_slots(self, src_r, src_c, tgt_r, tgt_c):
+        # Swap configuration in current page
+        src_slot = self.board_slots[src_r][src_c]
+        tgt_slot = self.board_slots[tgt_r][tgt_c]
+
+        self.board_slots[src_r][src_c] = tgt_slot
+        self.board_slots[tgt_r][tgt_c] = src_slot
+
+        # Refresh UI
+        self.refresh_grid_buttons()
+
+        # Focus inspector on the target slot
+        self.on_grid_button_clicked(tgt_r, tgt_c)
+
+        # Save to database
+        self.save_board_data()
+
+        self.log(f"Grid Move: Swapped Row {src_r + 1} Col {src_c + 1} with Row {tgt_r + 1} Col {tgt_c + 1}", self.accent_cyan)
 
     # --- Win32 Drag & Drop Methods (TkinterDnD2) ---
 
@@ -915,6 +993,7 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         ctk.CTkButton(macro_tb, text="+ Launch App", fg_color="#182d24", text_color=self.accent_green, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("app")).pack(fill="x", pady=2)
         ctk.CTkButton(macro_tb, text="+ Launch Web", fg_color="#2c1a30", text_color=self.accent_pink, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("web")).pack(fill="x", pady=2)
         ctk.CTkButton(macro_tb, text="+ Click Image", fg_color="#2c271c", text_color=self.accent_orange, font=("Helvetica", 10, "bold"), height=24, command=lambda: self.add_sequence_card("image")).pack(fill="x", pady=2)
+        ctk.CTkButton(macro_tb, text="● Record Activity", fg_color="#2d1d1f", hover_color="#3d2729", text_color="#ff453a", font=("Helvetica", 10, "bold"), height=24, command=self.record_macro_activity).pack(fill="x", pady=2)
         ctk.CTkButton(macro_tb, text="Clear Steps", fg_color="transparent", border_color="#30363d", border_width=1, text_color=self.text_gray, font=("Helvetica", 10, "bold"), height=24, command=self.clear_inspector_macro_timeline).pack(fill="x", pady=(10, 2))
 
     # --- Property Inspector Actions ---
@@ -1191,6 +1270,9 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     step['glide_enabled'] = action['glide_switch'].get() == 1
                     step['glide_duration'] = action['glide_slider'].get()
                     
+                elif atype == 'recorded':
+                    step['events'] = action.get('events', [])
+                    
                 steps_data.append(step)
             slot['steps'] = steps_data
 
@@ -1335,6 +1417,128 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     # --- Inline Macro Timeline Card Managers ---
 
+    def serialize_key(self, key):
+        if isinstance(key, pynput_keyboard.Key):
+            return f"special:{key.name}"
+        elif hasattr(key, 'char') and key.char is not None:
+            return f"char:{key.char}"
+        elif hasattr(key, 'vk') and key.vk is not None:
+            return f"vk:{key.vk}"
+        else:
+            return f"str:{str(key)}"
+
+    def deserialize_key(self, key_str):
+        if not key_str or not isinstance(key_str, str):
+            return None
+        if key_str.startswith("special:"):
+            name = key_str.split(":", 1)[1]
+            if hasattr(pynput_keyboard.Key, name):
+                return getattr(pynput_keyboard.Key, name)
+        elif key_str.startswith("char:"):
+            char = key_str.split(":", 1)[1]
+            return pynput_keyboard.KeyCode.from_char(char)
+        elif key_str.startswith("vk:"):
+            try:
+                vk = int(key_str.split(":", 1)[1])
+                return pynput_keyboard.KeyCode(vk=vk)
+            except ValueError:
+                pass
+        elif key_str.startswith("str:"):
+            val = key_str.split(":", 1)[1]
+            if val.startswith("Key."):
+                name = val.split(".", 1)[1]
+                if hasattr(pynput_keyboard.Key, name):
+                    return getattr(pynput_keyboard.Key, name)
+            return pynput_keyboard.KeyCode.from_char(val)
+        return None
+
+    def record_macro_activity(self):
+        self.log("Macro recording will start in 1 second. Minimizing window...", "#ff453a")
+        self.log("ESC key will STOP recording. Please perform your keyboard & mouse actions.", self.accent_purple)
+        
+        def start_listening():
+            # Wait 1s
+            time.sleep(1.0)
+            
+            # Hide app window
+            self.after(0, self.withdraw)
+            
+            self.recorded_events = []
+            self.currently_pressed_keys = set()
+            self.last_move_time = time.time()
+            self.is_recording_macro = True
+            
+            def on_move(x, y):
+                now = time.time()
+                # Sample at ~30Hz
+                if now - self.last_move_time >= 0.033:
+                    self.recorded_events.append({
+                        'time': now,
+                        'type': 'mouse_move',
+                        'x': x,
+                        'y': y
+                    })
+                    self.last_move_time = now
+                    
+            def on_click(x, y, button, pressed):
+                self.recorded_events.append({
+                    'time': time.time(),
+                    'type': 'mouse_down' if pressed else 'mouse_up',
+                    'x': x,
+                    'y': y,
+                    'button': button.name
+                })
+                
+            def on_press(key):
+                if key == pynput_keyboard.Key.esc:
+                    self.is_recording_macro = False
+                    return False  # stops keyboard listener
+                if key not in self.currently_pressed_keys:
+                    self.currently_pressed_keys.add(key)
+                    self.recorded_events.append({
+                        'time': time.time(),
+                        'type': 'key_down',
+                        'key': self.serialize_key(key)
+                    })
+                    
+            def on_release(key):
+                if key == pynput_keyboard.Key.esc:
+                    return
+                if key in self.currently_pressed_keys:
+                    self.currently_pressed_keys.remove(key)
+                    self.recorded_events.append({
+                        'time': time.time(),
+                        'type': 'key_up',
+                        'key': self.serialize_key(key)
+                    })
+            
+            self.macro_mouse_listener = pynput_mouse.Listener(on_move=on_move, on_click=on_click)
+            self.macro_keyboard_listener = pynput_keyboard.Listener(on_press=on_press, on_release=on_release)
+            
+            self.macro_mouse_listener.start()
+            self.macro_keyboard_listener.start()
+            
+            # Block background thread until keyboard listener stops
+            self.macro_keyboard_listener.join()
+            
+            # Stop mouse listener
+            self.macro_mouse_listener.stop()
+            
+            # Restore window on main thread
+            self.after(0, self.deiconify)
+            
+            # Remove trailing ESC key press from events
+            while self.recorded_events and self.recorded_events[-1].get('type') in ('key_down', 'key_up') and self.recorded_events[-1].get('key') == "special:esc":
+                self.recorded_events.pop()
+                
+            if self.recorded_events:
+                self.after(0, lambda: self.add_sequence_card("recorded", {'events': self.recorded_events}))
+                self.after(0, lambda: self.log(f"Recording completed! Added Recorded Session card ({len(self.recorded_events)} events).", self.accent_green))
+            else:
+                self.after(0, lambda: self.log("Recording cancelled: No events captured.", "#ff9500"))
+
+        threading.Thread(target=start_listening, daemon=True).start()
+
     def clear_inspector_macro_timeline(self):
         self.clear_timeline_widgets_only()
         self.save_current_inspector_data()
@@ -1361,8 +1565,8 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         index_lbl = ctk.CTkLabel(header, text="#0", font=("Helvetica", 10, "bold"), text_color=self.text_gray)
         index_lbl.pack(side="left", padx=(0, 6))
         
-        title_colors = {"mouse": self.accent_cyan, "delay": self.accent_purple, "key": self.accent_green, "text": "#ff9500", "app": self.accent_green, "image": self.accent_orange, "web": self.accent_pink}
-        title_text = {"mouse": "MOUSE", "delay": "DELAY", "key": "KEYPRESS", "text": "TEXT", "app": "LAUNCH APP", "image": "CLICK IMAGE", "web": "LAUNCH WEB"}
+        title_colors = {"mouse": self.accent_cyan, "delay": self.accent_purple, "key": self.accent_green, "text": "#ff9500", "app": self.accent_green, "image": self.accent_orange, "web": self.accent_pink, "recorded": self.accent_gold}
+        title_text = {"mouse": "MOUSE", "delay": "DELAY", "key": "KEYPRESS", "text": "TEXT", "app": "LAUNCH APP", "image": "CLICK IMAGE", "web": "LAUNCH WEB", "recorded": "RECORDED SESSION"}
         
         type_lbl = ctk.CTkLabel(header, text=title_text[action_type], font=("Helvetica", 10, "bold"), text_color=title_colors[action_type])
         type_lbl.pack(side="left")
@@ -1583,6 +1787,25 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 'image_entry': image_entry, 'browse_btn': browse_btn, 'snip_btn': snip_btn,
                 'click_type_combo': click_type_combo, 'confidence_slider': confidence_slider,
                 'glide_switch': glide_switch, 'glide_slider': glide_slider, 'conf_lbl': conf_lbl
+            })
+
+        elif action_type == "recorded":
+            events = step_data.get('events', []) if step_data else []
+            events_count = len(events)
+            
+            # Calculate duration
+            if events:
+                duration = events[-1]['time'] - events[0]['time']
+            else:
+                duration = 0.0
+                
+            lbl_text = f"Recorded: {events_count} events, Duration: {duration:.2f}s"
+            info_lbl = ctk.CTkLabel(body, text=lbl_text, text_color=self.accent_gold, font=("Helvetica", 11, "bold"))
+            info_lbl.pack(side="left", padx=(0, 10))
+            
+            action_data.update({
+                'info_lbl': info_lbl,
+                'events': events
             })
 
         self.sequence_actions.append(action_data)
@@ -1999,6 +2222,49 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                             
                             self.log(f"Macro step: located image and clicked successfully at ({x}, {y}).", self.accent_green)
                             
+                    elif stype == 'recorded':
+                        events = step.get('events', [])
+                        if events:
+                            self.log(f"Replaying recorded session: {len(events)} events...", self.accent_purple)
+                            start_time = time.time()
+                            base_offset = events[0].get('time', 0.0)
+                            
+                            for ev in events:
+                                target_time = start_time + (ev.get('time', 0.0) - base_offset)
+                                now = time.time()
+                                if target_time > now:
+                                    time.sleep(target_time - now)
+                                    
+                                etype = ev.get('type')
+                                if etype == 'mouse_move':
+                                    self.mouse_controller.position = (ev['x'], ev['y'])
+                                elif etype == 'mouse_down':
+                                    self.mouse_controller.position = (ev['x'], ev['y'])
+                                    btn_name = ev.get('button', 'left')
+                                    btn = pynput_mouse.Button.left if btn_name == 'left' else (pynput_mouse.Button.right if btn_name == 'right' else pynput_mouse.Button.middle)
+                                    self.mouse_controller.press(btn)
+                                elif etype == 'mouse_up':
+                                    self.mouse_controller.position = (ev['x'], ev['y'])
+                                    btn_name = ev.get('button', 'left')
+                                    btn = pynput_mouse.Button.left if btn_name == 'left' else (pynput_mouse.Button.right if btn_name == 'right' else pynput_mouse.Button.middle)
+                                    self.mouse_controller.release(btn)
+                                elif etype == 'key_down':
+                                    k_val = ev.get('key')
+                                    k_obj = self.deserialize_key(k_val)
+                                    if k_obj:
+                                        try:
+                                            self.keyboard_controller.press(k_obj)
+                                        except:
+                                            pass
+                                elif etype == 'key_up':
+                                    k_val = ev.get('key')
+                                    k_obj = self.deserialize_key(k_val)
+                                    if k_obj:
+                                        try:
+                                            self.keyboard_controller.release(k_obj)
+                                        except:
+                                            pass
+                                            
                     time.sleep(0.02)
                     
                 self.log("Macro sequence completed successfully.", self.accent_green)
