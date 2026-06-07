@@ -20,49 +20,8 @@ try:
 except ImportError:
     OPENCV_AVAILABLE = False
 
-# Win32 Drag and Drop imports & setup
-import ctypes
-from ctypes import wintypes
-
-GWL_WNDPROC = -4
-WM_DROPFILES = 0x0233
-
-DragQueryFile = ctypes.windll.shell32.DragQueryFileW
-DragQueryFile.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.DWORD]
-DragQueryFile.restype = wintypes.UINT
-
-DragFinish = ctypes.windll.shell32.DragFinish
-DragFinish.argtypes = [wintypes.HANDLE]
-DragFinish.restype = None
-
-DragAcceptFiles = ctypes.windll.shell32.DragAcceptFiles
-DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
-DragAcceptFiles.restype = None
-
-CallWindowProc = ctypes.windll.user32.CallWindowProcW
-CallWindowProc.argtypes = [ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-CallWindowProc.restype = ctypes.c_void_p
-
-try:
-    SetWindowLongPtr = ctypes.windll.user32.SetWindowLongPtrW
-    SetWindowLongPtr.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
-    SetWindowLongPtr.restype = ctypes.c_void_p
-    
-    GetWindowLongPtr = ctypes.windll.user32.GetWindowLongPtrW
-    GetWindowLongPtr.argtypes = [wintypes.HWND, ctypes.c_int]
-    GetWindowLongPtr.restype = ctypes.c_void_p
-except AttributeError:
-    # 32-bit fallback
-    SetWindowLongPtr = ctypes.windll.user32.SetWindowLongW
-    SetWindowLongPtr.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LPARAM]
-    SetWindowLongPtr.restype = wintypes.LPARAM
-    
-    GetWindowLongPtr = ctypes.windll.user32.GetWindowLongW
-    GetWindowLongPtr.argtypes = [wintypes.HWND, ctypes.c_int]
-    GetWindowLongPtr.restype = wintypes.LPARAM
-
-# WNDPROC prototype
-WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+# Win32 Drag and Drop imports & setup (Migrated to TkinterDnD2)
+from tkinterdnd2 import TkinterDnD, DND_FILES
 
 
 # Set default appearance
@@ -288,9 +247,10 @@ class ScreenSnipper:
         self.callback(None)
 
 
-class ClickPulseApp(ctk.CTk):
+class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
     def __init__(self):
         super().__init__()
+        self.TkdndVersion = TkinterDnD._require(self)
         
         # Configure Main Window
         self.title("ClickPulse - Virtual Control Deck")
@@ -573,39 +533,26 @@ class ClickPulseApp(ctk.CTk):
         self.log_text.pack(fill="both", expand=True, pady=(5, 0))
         self.log_text.configure(state="disabled")
 
-    # --- Win32 Drag & Drop Methods ---
+    # --- Win32 Drag & Drop Methods (TkinterDnD2) ---
 
     def enable_drag_and_drop(self):
         try:
-            hwnd = self.winfo_id()
-            DragAcceptFiles(hwnd, True)
-            
-            # Store the original wndproc
-            self._old_wndproc = GetWindowLongPtr(hwnd, GWL_WNDPROC)
-            
-            # Define our new wndproc
-            def new_wndproc(hwnd_val, msg, wParam, lParam):
-                if msg == WM_DROPFILES:
-                    hDrop = wParam
-                    files = []
-                    num_files = DragQueryFile(hDrop, 0xFFFFFFFF, None, 0)
-                    for i in range(num_files):
-                        length = DragQueryFile(hDrop, i, None, 0)
-                        buf = ctypes.create_unicode_buffer(length + 1)
-                        DragQueryFile(hDrop, i, buf, length + 1)
-                        files.append(buf.value)
-                    DragFinish(hDrop)
-                    
-                    if files:
-                        self.after(0, lambda: self.on_files_dropped(files))
-                    return 0
-                return CallWindowProc(self._old_wndproc, hwnd_val, msg, wParam, lParam)
-                
-            self._wndproc_ctypes = WNDPROC(new_wndproc)
-            SetWindowLongPtr(hwnd, GWL_WNDPROC, self._wndproc_ctypes)
+            self.drop_target_register(DND_FILES)
+            self.dnd_bind('<<Drop>>', self.on_drop_event)
             self.log("Drag-and-Drop enabled for files & folders.")
         except Exception as e:
             self.log(f"Drag-and-Drop initialization failed: {e}", "#ff9500")
+
+    def on_drop_event(self, event):
+        try:
+            if not event.data:
+                return
+            # Use self.tk.splitlist to correctly parse paths, handling spaces and braces
+            files = self.tk.splitlist(event.data)
+            if files:
+                self.on_files_dropped(files)
+        except Exception as e:
+            self.log(f"Error handling dropped files: {e}", "#ff453a")
 
     def on_files_dropped(self, files):
         r, c = self.selected_row, self.selected_col
@@ -616,8 +563,8 @@ class ClickPulseApp(ctk.CTk):
         if not files:
             return
             
-        # Parse first dropped file/folder path
-        path = files[0]
+        # Parse first dropped file/folder path and normalize
+        path = os.path.normpath(files[0])
         basename = os.path.basename(path)
         title, ext = os.path.splitext(basename)
         if not title:
