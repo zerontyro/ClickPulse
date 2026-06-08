@@ -296,6 +296,12 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.mouse_controller = pynput_mouse.Controller()
         self.keyboard_controller = pynput_keyboard.Controller()
         self.sequence_lock = threading.Lock()
+
+        # AutoClicker & MouseJiggler state
+        self.autoclicker_active = False
+        self.jiggler_active = False
+        self._autoclicker_thread = None
+        self._jiggler_thread = None
         
         # Build UI layout
         self.setup_ui()
@@ -530,6 +536,51 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.btn_tb_clear = ctk.CTkButton(self.toolbox_panel, text="Clear Selected Slot", fg_color="transparent", hover_color="#2b3240", border_color="#30363d", border_width=1, text_color=self.text_gray, font=("Helvetica", 12, "bold"), height=34, command=lambda: self.assign_action_to_selected("empty"))
         self.btn_tb_clear.pack(fill="x", padx=15, pady=(25, 6))
 
+        # --- Utility Tools Section ---
+        util_div = ctk.CTkFrame(self.toolbox_panel, fg_color="#1a1e28", corner_radius=10, border_color="#2b3240", border_width=1)
+        util_div.pack(fill="x", padx=10, pady=(18, 6))
+
+        util_title = ctk.CTkLabel(util_div, text="⚡  Utility Tools", font=("Helvetica", 11, "bold"), text_color=self.accent_cyan)
+        util_title.pack(anchor="w", padx=10, pady=(8, 4))
+
+        # Interval slider row
+        slider_row = ctk.CTkFrame(util_div, fg_color="transparent")
+        slider_row.pack(fill="x", padx=10, pady=(0, 4))
+
+        self.util_interval_lbl = ctk.CTkLabel(slider_row, text="Interval: 1.00s", font=("Helvetica", 10), text_color=self.text_gray)
+        self.util_interval_lbl.pack(side="left")
+
+        self.util_interval_slider = ctk.CTkSlider(
+            util_div, from_=0.05, to=5.0, number_of_steps=99,
+            progress_color=self.accent_cyan, button_color=self.accent_cyan, button_hover_color="#00b8cc",
+            height=14,
+            command=self._update_utility_interval_label
+        )
+        self.util_interval_slider.set(1.0)
+        self.util_interval_slider.pack(fill="x", padx=10, pady=(0, 8))
+
+        # AutoClicker toggle button
+        self.btn_autoclicker = ctk.CTkButton(
+            util_div, text="🖱  AutoClicker  OFF",
+            fg_color="#1c212e", hover_color="#2b3240",
+            border_color="#30363d", border_width=1,
+            text_color=self.text_gray,
+            font=("Helvetica", 11, "bold"), height=30,
+            command=self.toggle_autoclicker
+        )
+        self.btn_autoclicker.pack(fill="x", padx=10, pady=(0, 6))
+
+        # MouseJiggler toggle button
+        self.btn_jiggler = ctk.CTkButton(
+            util_div, text="🐭  MouseJiggler  OFF",
+            fg_color="#1c212e", hover_color="#2b3240",
+            border_color="#30363d", border_width=1,
+            text_color=self.text_gray,
+            font=("Helvetica", 11, "bold"), height=30,
+            command=self.toggle_mousejiggler
+        )
+        self.btn_jiggler.pack(fill="x", padx=10, pady=(0, 10))
+
         # 3. Visual Log Panel at the absolute bottom
         self.log_container = ctk.CTkFrame(self, fg_color="transparent")
         self.log_container.pack(fill="x", side="bottom", padx=25, pady=(0, 15))
@@ -544,7 +595,76 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.log_text.pack(fill="both", expand=True, pady=(5, 0))
         self.log_text.configure(state="disabled")
 
+    # --- Utility Tools: AutoClicker & MouseJiggler ---
+
+    def _update_utility_interval_label(self, val=None):
+        interval = self.util_interval_slider.get()
+        self.util_interval_lbl.configure(text=f"Interval: {interval:.2f}s")
+
+    def toggle_autoclicker(self):
+        self.autoclicker_active = not self.autoclicker_active
+        if self.autoclicker_active:
+            self.btn_autoclicker.configure(
+                text="🖱  AutoClicker  ON",
+                fg_color="#0a2a1a", border_color=self.accent_green,
+                text_color=self.accent_green
+            )
+            self.log("AutoClicker started. Click the button again to stop.", self.accent_green)
+            self._autoclicker_thread = threading.Thread(target=self._run_autoclicker, daemon=True)
+            self._autoclicker_thread.start()
+        else:
+            self.btn_autoclicker.configure(
+                text="🖱  AutoClicker  OFF",
+                fg_color="#1c212e", border_color="#30363d",
+                text_color=self.text_gray
+            )
+            self.log("AutoClicker stopped.", self.text_gray)
+
+    def _run_autoclicker(self):
+        import time as _time
+        while self.autoclicker_active:
+            interval = self.util_interval_slider.get()
+            self.mouse_controller.click(pynput_mouse.Button.left, 1)
+            _time.sleep(interval)
+
+    def toggle_mousejiggler(self):
+        self.jiggler_active = not self.jiggler_active
+        if self.jiggler_active:
+            self.btn_jiggler.configure(
+                text="🐭  MouseJiggler  ON",
+                fg_color="#0a1a2a", border_color=self.accent_cyan,
+                text_color=self.accent_cyan
+            )
+            self.log("MouseJiggler started. Click the button again to stop.", self.accent_cyan)
+            self._jiggler_thread = threading.Thread(target=self._run_jiggler, daemon=True)
+            self._jiggler_thread.start()
+        else:
+            self.btn_jiggler.configure(
+                text="🐭  MouseJiggler  OFF",
+                fg_color="#1c212e", border_color="#30363d",
+                text_color=self.text_gray
+            )
+            self.log("MouseJiggler stopped.", self.text_gray)
+
+    def _run_jiggler(self):
+        import time as _time
+        import random as _random
+        while self.jiggler_active:
+            interval = self.util_interval_slider.get()
+            # Get current position and jiggle randomly by up to ±80px
+            cx, cy = self.mouse_controller.position
+            dx = _random.randint(-80, 80)
+            dy = _random.randint(-80, 80)
+            # Clamp within screen bounds (basic guard)
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            nx = max(0, min(sw - 1, cx + dx))
+            ny = max(0, min(sh - 1, cy + dy))
+            self.mouse_controller.position = (nx, ny)
+            _time.sleep(interval)
+
     # --- Grid Drag-and-Drop Methods ---
+
 
     def start_grid_drag(self, event, row, col):
         self.drag_src_row = row
