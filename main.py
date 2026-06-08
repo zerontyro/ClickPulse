@@ -302,6 +302,8 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.jiggler_active = False
         self._autoclicker_thread = None
         self._jiggler_thread = None
+        self.autoclicker_hotkey = set()          # Recorded hotkey combo
+        self.is_recording_ac_hotkey = False      # Recording mode flag
         
         # Build UI layout
         self.setup_ui()
@@ -536,50 +538,130 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.btn_tb_clear = ctk.CTkButton(self.toolbox_panel, text="Clear Selected Slot", fg_color="transparent", hover_color="#2b3240", border_color="#30363d", border_width=1, text_color=self.text_gray, font=("Helvetica", 12, "bold"), height=34, command=lambda: self.assign_action_to_selected("empty"))
         self.btn_tb_clear.pack(fill="x", padx=15, pady=(25, 6))
 
-        # --- Utility Tools Section ---
-        util_div = ctk.CTkFrame(self.toolbox_panel, fg_color="#1a1e28", corner_radius=10, border_color="#2b3240", border_width=1)
-        util_div.pack(fill="x", padx=10, pady=(18, 6))
-
-        util_title = ctk.CTkLabel(util_div, text="⚡  Utility Tools", font=("Helvetica", 11, "bold"), text_color=self.accent_cyan)
-        util_title.pack(anchor="w", padx=10, pady=(8, 4))
-
-        # Interval slider row
-        slider_row = ctk.CTkFrame(util_div, fg_color="transparent")
-        slider_row.pack(fill="x", padx=10, pady=(0, 4))
-
-        self.util_interval_lbl = ctk.CTkLabel(slider_row, text="Interval: 1.00s", font=("Helvetica", 10), text_color=self.text_gray)
-        self.util_interval_lbl.pack(side="left")
-
-        self.util_interval_slider = ctk.CTkSlider(
-            util_div, from_=0.05, to=5.0, number_of_steps=99,
-            progress_color=self.accent_cyan, button_color=self.accent_cyan, button_hover_color="#00b8cc",
-            height=14,
-            command=self._update_utility_interval_label
+        # ══════════════════════════════════════
+        # ⚡ Utility Tools Panel
+        # ══════════════════════════════════════
+        util_outer = ctk.CTkScrollableFrame(
+            self.toolbox_panel, fg_color="transparent",
+            scrollbar_button_color="#2b3240", scrollbar_button_hover_color="#3a4255"
         )
-        self.util_interval_slider.set(1.0)
-        self.util_interval_slider.pack(fill="x", padx=10, pady=(0, 8))
+        util_outer.pack(fill="both", expand=True, padx=6, pady=(10, 6))
 
-        # AutoClicker toggle button
+        util_title = ctk.CTkLabel(util_outer, text="⚡  Utility Tools", font=("Helvetica", 11, "bold"), text_color=self.accent_cyan)
+        util_title.pack(anchor="w", padx=4, pady=(4, 8))
+
+        # ── AutoClicker Section ──────────────
+        ac_frame = ctk.CTkFrame(util_outer, fg_color="#0f1a12", corner_radius=8, border_color="#1a4025", border_width=1)
+        ac_frame.pack(fill="x", padx=2, pady=(0, 10))
+
+        ctk.CTkLabel(ac_frame, text="🖱  AutoClicker", font=("Helvetica", 10, "bold"), text_color=self.accent_green).pack(anchor="w", padx=8, pady=(6, 4))
+
+        # Interval slider
+        ac_int_row = ctk.CTkFrame(ac_frame, fg_color="transparent")
+        ac_int_row.pack(fill="x", padx=8, pady=(0, 2))
+        self.ac_interval_lbl = ctk.CTkLabel(ac_int_row, text="Interval: 1.00s", font=("Helvetica", 9), text_color=self.text_gray)
+        self.ac_interval_lbl.pack(side="left")
+        self.ac_interval_slider = ctk.CTkSlider(
+            ac_frame, from_=0.05, to=5.0, number_of_steps=99,
+            progress_color=self.accent_green, button_color=self.accent_green, button_hover_color="#00cc6a",
+            height=12, command=lambda v: self.ac_interval_lbl.configure(text=f"Interval: {v:.2f}s")
+        )
+        self.ac_interval_slider.set(1.0)
+        self.ac_interval_slider.pack(fill="x", padx=8, pady=(0, 6))
+
+        # Duration entry
+        ac_dur_row = ctk.CTkFrame(ac_frame, fg_color="transparent")
+        ac_dur_row.pack(fill="x", padx=8, pady=(0, 6))
+        ctk.CTkLabel(ac_dur_row, text="Duration (0=∞):", font=("Helvetica", 9), text_color=self.text_gray).pack(side="left", padx=(0, 4))
+        self.ac_duration_entry = ctk.CTkEntry(
+            ac_dur_row, width=52, height=20, placeholder_text="sec",
+            fg_color="#0a0c10", border_color="#1a4025", text_color=self.text_white,
+            font=("Helvetica", 10)
+        )
+        self.ac_duration_entry.insert(0, "0")
+        self.ac_duration_entry.pack(side="left")
+        ctk.CTkLabel(ac_dur_row, text="sec", font=("Helvetica", 9), text_color="#4a5568").pack(side="left", padx=(3, 0))
+
+        # Hotkey row
+        ac_hk_row = ctk.CTkFrame(ac_frame, fg_color="transparent")
+        ac_hk_row.pack(fill="x", padx=8, pady=(0, 4))
+        ctk.CTkLabel(ac_hk_row, text="Hotkey:", font=("Helvetica", 9), text_color=self.text_gray).pack(side="left", padx=(0, 4))
+        self.ac_hotkey_display = ctk.CTkLabel(
+            ac_hk_row, text="None", font=("Helvetica", 9, "bold"),
+            text_color=self.accent_green, width=70, anchor="w"
+        )
+        self.ac_hotkey_display.pack(side="left", padx=(0, 4))
+        self.ac_hotkey_rec_btn = ctk.CTkButton(
+            ac_hk_row, text="Record", width=50, height=18,
+            fg_color="#1a4025", hover_color="#224a30",
+            text_color=self.accent_green, font=("Helvetica", 9, "bold"),
+            corner_radius=4, command=self.start_record_ac_hotkey
+        )
+        self.ac_hotkey_rec_btn.pack(side="left", padx=(0, 3))
+        ctk.CTkButton(
+            ac_hk_row, text="✕", width=18, height=18,
+            fg_color="#2a1010", hover_color="#3d1515",
+            text_color="#ff453a", font=("Helvetica", 9, "bold"),
+            corner_radius=4, command=self.clear_ac_hotkey
+        ).pack(side="left")
+
+        # Toggle button
         self.btn_autoclicker = ctk.CTkButton(
-            util_div, text="🖱  AutoClicker  OFF",
+            ac_frame, text="🖱  AutoClicker  OFF",
             fg_color="#1c212e", hover_color="#2b3240",
-            border_color="#30363d", border_width=1,
+            border_color="#1a4025", border_width=1,
             text_color=self.text_gray,
-            font=("Helvetica", 11, "bold"), height=30,
+            font=("Helvetica", 11, "bold"), height=28,
             command=self.toggle_autoclicker
         )
-        self.btn_autoclicker.pack(fill="x", padx=10, pady=(0, 6))
+        self.btn_autoclicker.pack(fill="x", padx=8, pady=(0, 8))
 
-        # MouseJiggler toggle button
+        # ── MouseJiggler Section ─────────────
+        jg_frame = ctk.CTkFrame(util_outer, fg_color="#0a1520", corner_radius=8, border_color="#1a3050", border_width=1)
+        jg_frame.pack(fill="x", padx=2, pady=(0, 6))
+
+        ctk.CTkLabel(jg_frame, text="🐭  MouseJiggler", font=("Helvetica", 10, "bold"), text_color=self.accent_cyan).pack(anchor="w", padx=8, pady=(6, 4))
+
+        # Jiggle interval slider
+        jg_int_row = ctk.CTkFrame(jg_frame, fg_color="transparent")
+        jg_int_row.pack(fill="x", padx=8, pady=(0, 2))
+        self.jg_interval_lbl = ctk.CTkLabel(jg_int_row, text="Interval: 1.00s", font=("Helvetica", 9), text_color=self.text_gray)
+        self.jg_interval_lbl.pack(side="left")
+        self.jg_interval_slider = ctk.CTkSlider(
+            jg_frame, from_=0.05, to=10.0, number_of_steps=199,
+            progress_color=self.accent_cyan, button_color=self.accent_cyan, button_hover_color="#00b8cc",
+            height=12, command=lambda v: self.jg_interval_lbl.configure(text=f"Interval: {v:.2f}s")
+        )
+        self.jg_interval_slider.set(1.0)
+        self.jg_interval_slider.pack(fill="x", padx=8, pady=(0, 6))
+
+        # Jiggle range slider
+        jg_rng_row = ctk.CTkFrame(jg_frame, fg_color="transparent")
+        jg_rng_row.pack(fill="x", padx=8, pady=(0, 2))
+        self.jg_range_lbl = ctk.CTkLabel(jg_rng_row, text="Range: 80px", font=("Helvetica", 9), text_color=self.text_gray)
+        self.jg_range_lbl.pack(side="left")
+        self.jg_range_slider = ctk.CTkSlider(
+            jg_frame, from_=5, to=400, number_of_steps=79,
+            progress_color="#00c8ff", button_color="#00c8ff", button_hover_color="#0099cc",
+            height=12, command=lambda v: self.jg_range_lbl.configure(text=f"Range: {int(v)}px")
+        )
+        self.jg_range_slider.set(80)
+        self.jg_range_slider.pack(fill="x", padx=8, pady=(0, 6))
+
+        # Toggle button
         self.btn_jiggler = ctk.CTkButton(
-            util_div, text="🐭  MouseJiggler  OFF",
+            jg_frame, text="🐭  MouseJiggler  OFF",
             fg_color="#1c212e", hover_color="#2b3240",
-            border_color="#30363d", border_width=1,
+            border_color="#1a3050", border_width=1,
             text_color=self.text_gray,
-            font=("Helvetica", 11, "bold"), height=30,
+            font=("Helvetica", 11, "bold"), height=28,
             command=self.toggle_mousejiggler
         )
-        self.btn_jiggler.pack(fill="x", padx=10, pady=(0, 10))
+        self.btn_jiggler.pack(fill="x", padx=8, pady=(0, 8))
+
+        # Keep legacy references for backward compat
+        self.util_interval_slider = self.ac_interval_slider
+        self.util_interval_lbl = self.ac_interval_lbl
 
         # 3. Visual Log Panel at the absolute bottom
         self.log_container = ctk.CTkFrame(self, fg_color="transparent")
@@ -598,9 +680,25 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
     # --- Utility Tools: AutoClicker & MouseJiggler ---
 
     def _update_utility_interval_label(self, val=None):
-        interval = self.util_interval_slider.get()
-        self.util_interval_lbl.configure(text=f"Interval: {interval:.2f}s")
+        interval = self.ac_interval_slider.get()
+        self.ac_interval_lbl.configure(text=f"Interval: {interval:.2f}s")
 
+    # ── AutoClicker Hotkey Recording ──────────────────────
+    def start_record_ac_hotkey(self):
+        self.is_recording_ac_hotkey = True
+        self.autoclicker_hotkey = set()
+        self.ac_hotkey_rec_btn.configure(text="● Stop", fg_color="#2a1010", text_color="#ff453a")
+        self.ac_hotkey_display.configure(text="Press keys...", text_color="#ff9500")
+        self.log("Recording AutoClicker hotkey — press your combo, then release all keys.", "#ff9500")
+
+    def clear_ac_hotkey(self):
+        self.autoclicker_hotkey = set()
+        self.is_recording_ac_hotkey = False
+        self.ac_hotkey_display.configure(text="None", text_color=self.accent_green)
+        self.ac_hotkey_rec_btn.configure(text="Record", fg_color="#1a4025", text_color=self.accent_green)
+        self.log("AutoClicker hotkey cleared.", self.text_gray)
+
+    # ── AutoClicker ───────────────────────────────────────
     def toggle_autoclicker(self):
         self.autoclicker_active = not self.autoclicker_active
         if self.autoclicker_active:
@@ -609,24 +707,45 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 fg_color="#0a2a1a", border_color=self.accent_green,
                 text_color=self.accent_green
             )
-            self.log("AutoClicker started. Click the button again to stop.", self.accent_green)
+            try:
+                dur = float(self.ac_duration_entry.get().strip())
+            except ValueError:
+                dur = 0.0
+            dur_str = f" for {dur:.1f}s" if dur > 0 else " (∞)"
+            self.log(f"AutoClicker started{dur_str}. Click again or press hotkey to stop.", self.accent_green)
             self._autoclicker_thread = threading.Thread(target=self._run_autoclicker, daemon=True)
             self._autoclicker_thread.start()
         else:
             self.btn_autoclicker.configure(
                 text="🖱  AutoClicker  OFF",
-                fg_color="#1c212e", border_color="#30363d",
+                fg_color="#1c212e", border_color="#1a4025",
                 text_color=self.text_gray
             )
             self.log("AutoClicker stopped.", self.text_gray)
 
     def _run_autoclicker(self):
         import time as _time
+        try:
+            dur = float(self.ac_duration_entry.get().strip())
+        except ValueError:
+            dur = 0.0
+        start = _time.time()
         while self.autoclicker_active:
-            interval = self.util_interval_slider.get()
+            interval = self.ac_interval_slider.get()
             self.mouse_controller.click(pynput_mouse.Button.left, 1)
             _time.sleep(interval)
+            if dur > 0 and (_time.time() - start) >= dur:
+                # Auto-stop after duration
+                self.autoclicker_active = False
+                self.after(0, lambda: self.btn_autoclicker.configure(
+                    text="🖱  AutoClicker  OFF",
+                    fg_color="#1c212e", border_color="#1a4025",
+                    text_color=self.text_gray
+                ))
+                self.after(0, lambda: self.log("AutoClicker: duration reached, auto-stopped.", self.accent_green))
+                break
 
+    # ── MouseJiggler ──────────────────────────────────────
     def toggle_mousejiggler(self):
         self.jiggler_active = not self.jiggler_active
         if self.jiggler_active:
@@ -641,7 +760,7 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         else:
             self.btn_jiggler.configure(
                 text="🐭  MouseJiggler  OFF",
-                fg_color="#1c212e", border_color="#30363d",
+                fg_color="#1c212e", border_color="#1a3050",
                 text_color=self.text_gray
             )
             self.log("MouseJiggler stopped.", self.text_gray)
@@ -650,12 +769,11 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         import time as _time
         import random as _random
         while self.jiggler_active:
-            interval = self.util_interval_slider.get()
-            # Get current position and jiggle randomly by up to ±80px
+            interval = self.jg_interval_slider.get()
+            jiggle_range = int(self.jg_range_slider.get())
             cx, cy = self.mouse_controller.position
-            dx = _random.randint(-80, 80)
-            dy = _random.randint(-80, 80)
-            # Clamp within screen bounds (basic guard)
+            dx = _random.randint(-jiggle_range, jiggle_range)
+            dy = _random.randint(-jiggle_range, jiggle_range)
             sw = self.winfo_screenwidth()
             sh = self.winfo_screenheight()
             nx = max(0, min(sw - 1, cx + dx))
@@ -2510,6 +2628,14 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
             self.after(0, lambda: self.inspector_hotkey_display.configure(text=combo_str))
             return
 
+        # 2b. AutoClicker Hotkey recording
+        if self.is_recording_ac_hotkey:
+            self.pressed_keys_global.add(key_name)
+            self.autoclicker_hotkey.add(key_name)
+            combo_str = " + ".join(sorted(list(self.autoclicker_hotkey)))
+            self.after(0, lambda s=combo_str: self.ac_hotkey_display.configure(text=s, text_color="#ff9500"))
+            return
+
         # 3. Global hotkey trigger monitoring
         self.pressed_keys_global.add(key_name)
         
@@ -2527,12 +2653,31 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                                 self.log(f"Global Hotkey Triggered for Slot P{p_idx+1} ({r+1}, {c+1}): {' + '.join(sorted(list(slot['hotkey'])))}", self.accent_purple)
                                 self.execute_slot_action_async(r, c, p_idx)
 
+        # AutoClicker global hotkey check
+        if self.autoclicker_hotkey and self.autoclicker_hotkey.issubset(self.pressed_keys_global):
+            if current_time - self.last_triggered_time > 0.4:
+                self.last_triggered_time = current_time
+                self.after(0, self.toggle_autoclicker)
+
     def global_on_release(self, key):
         key_name = self.normalize_key_name(key)
         
         if key_name in self.pressed_keys_global:
             self.pressed_keys_global.remove(key_name)
             
+        # AutoClicker hotkey finalize (on full release)
+        if self.is_recording_ac_hotkey:
+            if len(self.pressed_keys_global) == 0:
+                self.is_recording_ac_hotkey = False
+                if self.autoclicker_hotkey:
+                    combo_str = " + ".join(sorted(list(self.autoclicker_hotkey)))
+                    self.after(0, lambda s=combo_str: [
+                        self.ac_hotkey_display.configure(text=s, text_color=self.accent_green),
+                        self.ac_hotkey_rec_btn.configure(text="Record", fg_color="#1a4025", text_color=self.accent_green)
+                    ])
+                    self.log(f"AutoClicker hotkey registered: {combo_str}", self.accent_green)
+                return
+
         if self.is_recording_slot:
             if len(self.pressed_keys_global) == 0:
                 self.is_recording_slot = False
