@@ -91,7 +91,7 @@ class JOYCAPS(Structure):
         ("wNumAxes", c_uint),
         ("wMaxButtons", c_uint),
         ("szRegKey", c_wchar * 32),
-        ("szOEMVxD", c_wchar * 260)
+        ("szOEMVxD", c_wchar * 266)
     ]
 
 class JOYINFOEX(Structure):
@@ -3144,7 +3144,8 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     joy_name = caps.szPname if caps.szPname else "Wireless Controller"
                     
                     # Read buttons
-                    for btn_idx in range(caps.wNumButtons):
+                    num_buttons = caps.wNumButtons if caps.wNumButtons > 0 else 32
+                    for btn_idx in range(min(num_buttons, 32)):
                         if info.dwButtons & (1 << btn_idx):
                             btn_label = self._get_winmm_button_label(joy_name, btn_idx)
                             current_pressed_all.add(btn_label)
