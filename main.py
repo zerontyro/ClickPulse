@@ -285,6 +285,11 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.sequence_actions = []            # Temp container for timeline widgets
         self.last_triggered_time = 0.0
         
+        # Loop execution control state
+        self.current_running_slot = None         # (page_idx, row, col) when running
+        self.running_slot_start_time = 0.0
+        self.stop_current_loop = False
+        
         # File paths
         exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
         self.board_file = os.path.join(exe_dir, "board.json")
@@ -390,7 +395,9 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     'click_type': 'Left Click',
                     'glide_enabled': True,
                     'glide_duration': 0.1,
-                    'steps': []
+                    'steps': [],
+                    'loop_enabled': False,
+                    'loop_count': 0
                 })
             page_slots.append(row_data)
         return page_slots
@@ -1023,6 +1030,19 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self.inspector_rec_btn.pack(side="left", padx=(0, 10))
 
+        # Loop Config
+        self.inspector_loop_switch = ctk.CTkSwitch(
+            header, text="Loop", text_color=self.text_gray, font=("Helvetica", 11), progress_color=self.accent_cyan,
+            command=self.on_inspector_loop_switch_toggled, width=70
+        )
+        self.inspector_loop_switch.pack(side="left", padx=(10, 5))
+
+        self.loop_count_lbl = ctk.CTkLabel(header, text="Times:", text_color=self.text_gray, font=("Helvetica", 11))
+        self.loop_count_lbl.pack(side="left", padx=(0, 4))
+        self.inspector_loop_count_entry = ctk.CTkEntry(header, width=45, height=26, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white)
+        self.inspector_loop_count_entry.pack(side="left", padx=(0, 5))
+        self.inspector_loop_count_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+
         # Test trigger button
         self.inspector_test_btn = ctk.CTkButton(
             header, text="Test Key", fg_color="#1f242e", hover_color="#2b3240", border_color=self.accent_purple, border_width=1,
@@ -1340,6 +1360,20 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         hk_combo = " + ".join(sorted(list(slot['hotkey']))) if slot['hotkey'] else "None"
         self.inspector_hotkey_display.configure(text=hk_combo)
 
+        # Load loop settings
+        loop_enabled = slot.get('loop_enabled', False)
+        loop_count = slot.get('loop_count', 0)
+        
+        if loop_enabled:
+            self.inspector_loop_switch.select()
+            self.inspector_loop_count_entry.configure(state="normal")
+        else:
+            self.inspector_loop_switch.deselect()
+            self.inspector_loop_count_entry.configure(state="disabled")
+            
+        self.inspector_loop_count_entry.delete(0, "end")
+        self.inspector_loop_count_entry.insert(0, str(loop_count))
+
         # Hide all inspector sub-frames
         self.param_empty_frame.pack_forget()
         self.param_app_frame.pack_forget()
@@ -1428,6 +1462,13 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.load_slot_to_inspector(r, c)
         self.save_current_inspector_data()
 
+    def on_inspector_loop_switch_toggled(self):
+        if self.inspector_loop_switch.get() == 1:
+            self.inspector_loop_count_entry.configure(state="normal")
+        else:
+            self.inspector_loop_count_entry.configure(state="disabled")
+        self.save_current_inspector_data()
+
     def save_current_inspector_data(self):
         r, c = self.selected_row, self.selected_col
         if r is None or c is None:
@@ -1438,6 +1479,11 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         # Header properties
         slot['title'] = self.inspector_title_entry.get().strip()
         slot['type'] = self.parse_type_name(self.inspector_type_combo.get())
+        slot['loop_enabled'] = self.inspector_loop_switch.get() == 1
+        try:
+            slot['loop_count'] = int(self.inspector_loop_count_entry.get().strip())
+        except ValueError:
+            slot['loop_count'] = 0
         
         # Grid button label updates
         grid_text = slot['title'] if slot['title'] else (slot['type'].upper() if slot['type'] != 'empty' else "")
@@ -2307,80 +2353,56 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
             return
             
         try:
-            if slot_type == 'app':
-                path = slot.get('app_path', '').strip()
-                if not path:
-                    self.log("Application path is blank.", "#ff453a")
-                    return
-                try:
-                    os.startfile(path)
-                    self.log(f"Successfully launched: {path}", self.accent_green)
-                except Exception as ex:
-                    self.log(f"Failed launching app: {str(ex)}", "#ff453a")
+            self.current_running_slot = (page_idx, r, c)
+            self.running_slot_start_time = time.time()
+            self.stop_current_loop = False
+
+            loop_enabled = slot.get('loop_enabled', False)
+            loop_count = slot.get('loop_count', 0)
+            
+            max_iterations = loop_count if (loop_enabled and loop_count > 0) else (1 if not loop_enabled else float('inf'))
+            iteration = 0
+            
+            while iteration < max_iterations:
+                if self.stop_current_loop:
+                    self.log("Loop execution stopped by user.", "#ff9500")
+                    break
                     
-            elif slot_type == 'web':
-                url = slot.get('web_url', '').strip()
-                if not url:
-                    self.log("Website URL is blank.", "#ff453a")
-                    return
-                try:
-                    import webbrowser
-                    webbrowser.open(url)
-                    self.log(f"Successfully launched website: {url}", self.accent_green)
-                except Exception as ex:
-                    self.log(f"Failed launching website: {str(ex)}", "#ff453a")
+                if iteration > 0:
+                    self.log(f"Looping Slot P{page_idx+1} ({r+1}, {c+1}): Iteration {iteration+1}")
+
+                if slot_type == 'app':
+                    path = slot.get('app_path', '').strip()
+                    if not path:
+                        self.log("Application path is blank.", "#ff453a")
+                        break
+                    try:
+                        os.startfile(path)
+                        self.log(f"Successfully launched: {path}", self.accent_green)
+                    except Exception as ex:
+                        self.log(f"Failed launching app: {str(ex)}", "#ff453a")
+                        break
+                        
+                elif slot_type == 'web':
+                    url = slot.get('web_url', '').strip()
+                    if not url:
+                        self.log("Website URL is blank.", "#ff453a")
+                        break
+                    try:
+                        import webbrowser
+                        webbrowser.open(url)
+                        self.log(f"Successfully launched website: {url}", self.accent_green)
+                    except Exception as ex:
+                        self.log(f"Failed launching website: {str(ex)}", "#ff453a")
+                        break
+                        
+                elif slot_type == 'mouse':
+                    x = slot.get('mouse_x', 1000)
+                    y = slot.get('mouse_y', 850)
+                    click_type = slot.get('click_type', 'Left Click')
+                    glide_enabled = slot.get('glide_enabled', True)
+                    glide_duration = slot.get('glide_duration', 0.1) if glide_enabled else 0.0
                     
-            elif slot_type == 'mouse':
-                x = slot.get('mouse_x', 1000)
-                y = slot.get('mouse_y', 850)
-                click_type = slot.get('click_type', 'Left Click')
-                glide_enabled = slot.get('glide_enabled', True)
-                glide_duration = slot.get('glide_duration', 0.1) if glide_enabled else 0.0
-                
-                # Glide execution
-                start_x, start_y = self.mouse_controller.position
-                if glide_duration > 0:
-                    steps = int(glide_duration * 120)
-                    if steps == 0: steps = 1
-                    dt = glide_duration / steps
-                    for step in range(1, steps + 1):
-                        t = step / steps
-                        if t < 0.5:
-                            ease_t = 4 * t * t * t
-                        else:
-                            ease_t = 1 - ((-2 * t + 2) ** 3) / 2
-                        curr_x = start_x + (x - start_x) * ease_t
-                        curr_y = start_y + (y - start_y) * ease_t
-                        self.mouse_controller.position = (int(curr_x), int(curr_y))
-                        time.sleep(dt)
-                else:
-                    self.mouse_controller.position = (x, y)
-                
-                time.sleep(0.03)  # Synchronization
-                
-                if click_type == "Left Click":
-                    self.mouse_controller.click(pynput_mouse.Button.left, 1)
-                elif click_type == "Double Left Click":
-                    self.mouse_controller.click(pynput_mouse.Button.left, 2)
-                elif click_type == "Right Click":
-                    self.mouse_controller.click(pynput_mouse.Button.right, 1)
-                elif click_type == "Middle Click":
-                    self.mouse_controller.click(pynput_mouse.Button.middle, 1)
-                
-                self.log(f"Cursor clicked successfully at ({x}, {y}).", self.accent_green)
-                
-            elif slot_type == 'image':
-                image_path = slot.get('image_path', '').strip()
-                confidence = slot.get('confidence', 0.8)
-                click_type = slot.get('click_type', 'Left Click')
-                glide_enabled = slot.get('glide_enabled', True)
-                glide_duration = slot.get('glide_duration', 0.1) if glide_enabled else 0.0
-                
-                coords = self.locate_image_on_screen(image_path, confidence)
-                if coords is None:
-                    self.log(f"Failed to locate image on screen: {image_path}", "#ff453a")
-                else:
-                    x, y = coords
                     # Glide execution
                     start_x, start_y = self.mouse_controller.position
                     if glide_duration > 0:
@@ -2388,6 +2410,8 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                         if steps == 0: steps = 1
                         dt = glide_duration / steps
                         for step in range(1, steps + 1):
+                            if self.stop_current_loop:
+                                break
                             t = step / steps
                             if t < 0.5:
                                 ease_t = 4 * t * t * t
@@ -2400,8 +2424,14 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     else:
                         self.mouse_controller.position = (x, y)
                     
-                    time.sleep(0.03) # Synchronization
+                    if self.stop_current_loop:
+                        break
+                        
+                    time.sleep(0.03)  # Synchronization
                     
+                    if self.stop_current_loop:
+                        break
+                        
                     if click_type == "Left Click":
                         self.mouse_controller.click(pynput_mouse.Button.left, 1)
                     elif click_type == "Double Left Click":
@@ -2411,32 +2441,31 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     elif click_type == "Middle Click":
                         self.mouse_controller.click(pynput_mouse.Button.middle, 1)
                     
-                    self.log(f"Located image and clicked successfully at ({x}, {y}).", self.accent_green)
+                    self.log(f"Cursor clicked successfully at ({x}, {y}).", self.accent_green)
                     
-            elif slot_type == 'macro':
-                steps = slot.get('steps', [])
-                if not steps:
-                    self.log("Macro sequence timeline is empty.", "#ff9500")
-                    return
-                
-                self.log("Starting macro sequence...", self.accent_purple)
-                for step_idx, step in enumerate(steps):
-                    stype = step.get('type')
+                elif slot_type == 'image':
+                    image_path = slot.get('image_path', '').strip()
+                    confidence = slot.get('confidence', 0.8)
+                    click_type = slot.get('click_type', 'Left Click')
+                    glide_enabled = slot.get('glide_enabled', True)
+                    glide_duration = slot.get('glide_duration', 0.1) if glide_enabled else 0.0
                     
-                    if stype == 'mouse':
-                        x = step.get('x', 1000)
-                        y = step.get('y', 850)
-                        click_type = step.get('click_type', 'Left Click')
-                        glide_enabled = step.get('glide_enabled', True)
-                        glide_duration = step.get('glide_duration', 0.1) if glide_enabled else 0.0
-                        
+                    coords = self.locate_image_on_screen(image_path, confidence)
+                    if coords is None:
+                        self.log(f"Failed to locate image on screen: {image_path}", "#ff453a")
+                        break
+                    else:
+                        x, y = coords
+                        # Glide execution
                         start_x, start_y = self.mouse_controller.position
                         if glide_duration > 0:
-                            steps_count = int(glide_duration * 120)
-                            if steps_count == 0: steps_count = 1
-                            dt = glide_duration / steps_count
-                            for step_s in range(1, steps_count + 1):
-                                t = step_s / steps_count
+                            steps = int(glide_duration * 120)
+                            if steps == 0: steps = 1
+                            dt = glide_duration / steps
+                            for step in range(1, steps + 1):
+                                if self.stop_current_loop:
+                                    break
+                                t = step / steps
                                 if t < 0.5:
                                     ease_t = 4 * t * t * t
                                 else:
@@ -2447,9 +2476,15 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                                 time.sleep(dt)
                         else:
                             self.mouse_controller.position = (x, y)
-                            
-                        time.sleep(0.03)
                         
+                        if self.stop_current_loop:
+                            break
+                            
+                        time.sleep(0.03) # Synchronization
+                        
+                        if self.stop_current_loop:
+                            break
+                            
                         if click_type == "Left Click":
                             self.mouse_controller.click(pynput_mouse.Button.left, 1)
                         elif click_type == "Double Left Click":
@@ -2458,64 +2493,38 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                             self.mouse_controller.click(pynput_mouse.Button.right, 1)
                         elif click_type == "Middle Click":
                             self.mouse_controller.click(pynput_mouse.Button.middle, 1)
-                            
-                    elif stype == 'delay':
-                        val = step.get('value', 500)
-                        unit = step.get('unit', 'ms')
-                        sleep_time = val / 1000.0 if unit == 'ms' else val
-                        time.sleep(sleep_time)
                         
-                    elif stype == 'key':
-                        key_val = step.get('key', 'F')
-                        if key_val:
-                            if key_val in SPECIAL_KEYS_MAP:
-                                key_obj = SPECIAL_KEYS_MAP[key_val]
-                            else:
-                                key_obj = pynput_keyboard.KeyCode.from_char(key_val.lower())
-                            self.keyboard_controller.press(key_obj)
-                            time.sleep(0.05)
-                            self.keyboard_controller.release(key_obj)
-                            
-                    elif stype == 'text':
-                        text_val = step.get('text', '')
-                        if text_val:
-                            self.keyboard_controller.type(text_val)
-                            
-                    elif stype == 'app':
-                        app_path = step.get('app_path', '').strip()
-                        if app_path:
-                            try:
-                                os.startfile(app_path)
-                            except Exception as ex:
-                                self.log(f"Failed to launch app in sequence: {str(ex)}", "#ff453a")
-                                
-                    elif stype == 'web':
-                        web_url = step.get('web_url', '').strip()
-                        if web_url:
-                            try:
-                                import webbrowser
-                                webbrowser.open(web_url)
-                            except Exception as ex:
-                                self.log(f"Failed to launch website in sequence: {str(ex)}", "#ff453a")
-
-                    elif stype == 'image':
-                        image_path = step.get('image_path', '').strip()
-                        confidence = step.get('confidence', 0.8)
-                        click_type = step.get('click_type', 'Left Click')
-                        glide_enabled = step.get('glide_enabled', True)
-                        glide_duration = step.get('glide_duration', 0.1) if glide_enabled else 0.0
+                        self.log(f"Located image and clicked successfully at ({x}, {y}).", self.accent_green)
                         
-                        coords = self.locate_image_on_screen(image_path, confidence)
-                        if coords is None:
-                            self.log(f"Macro step: failed to locate image: {image_path}", "#ff453a")
-                        else:
-                            x, y = coords
+                elif slot_type == 'macro':
+                    steps = slot.get('steps', [])
+                    if not steps:
+                        self.log("Macro sequence timeline is empty.", "#ff9500")
+                        break
+                    
+                    self.log("Starting macro sequence...", self.accent_purple)
+                    macro_stopped = False
+                    for step_idx, step in enumerate(steps):
+                        if self.stop_current_loop:
+                            macro_stopped = True
+                            break
+                        stype = step.get('type')
+                        
+                        if stype == 'mouse':
+                            x = step.get('x', 1000)
+                            y = step.get('y', 850)
+                            click_type = step.get('click_type', 'Left Click')
+                            glide_enabled = step.get('glide_enabled', True)
+                            glide_duration = step.get('glide_duration', 0.1) if glide_enabled else 0.0
+                            
                             start_x, start_y = self.mouse_controller.position
                             if glide_duration > 0:
                                 steps_count = int(glide_duration * 120)
                                 if steps_count == 0: steps_count = 1
                                 dt = glide_duration / steps_count
                                 for step_s in range(1, steps_count + 1):
+                                    if self.stop_current_loop:
+                                        break
                                     t = step_s / steps_count
                                     if t < 0.5:
                                         ease_t = 4 * t * t * t
@@ -2528,7 +2537,15 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                             else:
                                 self.mouse_controller.position = (x, y)
                                 
+                            if self.stop_current_loop:
+                                macro_stopped = True
+                                break
+                                
                             time.sleep(0.03)
+                            
+                            if self.stop_current_loop:
+                                macro_stopped = True
+                                break
                             
                             if click_type == "Left Click":
                                 self.mouse_controller.click(pynput_mouse.Button.left, 1)
@@ -2538,63 +2555,183 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                                 self.mouse_controller.click(pynput_mouse.Button.right, 1)
                             elif click_type == "Middle Click":
                                 self.mouse_controller.click(pynput_mouse.Button.middle, 1)
+                                
+                        elif stype == 'delay':
+                            val = step.get('value', 500)
+                            unit = step.get('unit', 'ms')
+                            sleep_time = val / 1000.0 if unit == 'ms' else val
                             
-                            self.log(f"Macro step: located image and clicked successfully at ({x}, {y}).", self.accent_green)
+                            # Interruptible sleep
+                            sleep_end = time.time() + sleep_time
+                            while time.time() < sleep_end:
+                                if self.stop_current_loop:
+                                    break
+                                time.sleep(0.01)
                             
-                    elif stype == 'recorded':
-                        events = step.get('events', [])
-                        skip_mouse_move = step.get('skip_mouse_move', False)
-                        if events:
-                            mode_str = " (WARP: mouse moves skipped)" if skip_mouse_move else ""
-                            self.log(f"Replaying recorded session: {len(events)} events{mode_str}...", self.accent_purple)
-                            start_time = time.time()
-                            base_offset = events[0].get('time', 0.0)
+                            if self.stop_current_loop:
+                                macro_stopped = True
+                                break
                             
-                            for ev in events:
-                                target_time = start_time + (ev.get('time', 0.0) - base_offset)
-                                now = time.time()
-                                if target_time > now:
-                                    time.sleep(target_time - now)
+                        elif stype == 'key':
+                            key_val = step.get('key', 'F')
+                            if key_val:
+                                if key_val in SPECIAL_KEYS_MAP:
+                                    key_obj = SPECIAL_KEYS_MAP[key_val]
+                                else:
+                                    key_obj = pynput_keyboard.KeyCode.from_char(key_val.lower())
+                                self.keyboard_controller.press(key_obj)
+                                time.sleep(0.05)
+                                self.keyboard_controller.release(key_obj)
+                                
+                        elif stype == 'text':
+                            text_val = step.get('text', '')
+                            if text_val:
+                                self.keyboard_controller.type(text_val)
+                                
+                        elif stype == 'app':
+                            app_path = step.get('app_path', '').strip()
+                            if app_path:
+                                try:
+                                    os.startfile(app_path)
+                                except Exception as ex:
+                                    self.log(f"Failed to launch app in sequence: {str(ex)}", "#ff453a")
                                     
-                                etype = ev.get('type')
-                                if etype == 'mouse_move':
-                                    if skip_mouse_move:
-                                        continue
-                                    self.mouse_controller.position = (ev['x'], ev['y'])
-                                elif etype == 'mouse_down':
-                                    self.mouse_controller.position = (ev['x'], ev['y'])
-                                    btn_name = ev.get('button', 'left')
-                                    btn = pynput_mouse.Button.left if btn_name == 'left' else (pynput_mouse.Button.right if btn_name == 'right' else pynput_mouse.Button.middle)
-                                    self.mouse_controller.press(btn)
-                                elif etype == 'mouse_up':
-                                    self.mouse_controller.position = (ev['x'], ev['y'])
-                                    btn_name = ev.get('button', 'left')
-                                    btn = pynput_mouse.Button.left if btn_name == 'left' else (pynput_mouse.Button.right if btn_name == 'right' else pynput_mouse.Button.middle)
-                                    self.mouse_controller.release(btn)
-                                elif etype == 'key_down':
-                                    k_val = ev.get('key')
-                                    k_obj = self.deserialize_key(k_val)
-                                    if k_obj:
-                                        try:
-                                            self.keyboard_controller.press(k_obj)
-                                        except:
-                                            pass
-                                elif etype == 'key_up':
-                                    k_val = ev.get('key')
-                                    k_obj = self.deserialize_key(k_val)
-                                    if k_obj:
-                                        try:
-                                            self.keyboard_controller.release(k_obj)
-                                        except:
-                                            pass
-                                            
-                    time.sleep(0.02)
-                    
-                self.log("Macro sequence completed successfully.", self.accent_green)
+                        elif stype == 'web':
+                            web_url = step.get('web_url', '').strip()
+                            if web_url:
+                                try:
+                                    import webbrowser
+                                    webbrowser.open(web_url)
+                                except Exception as ex:
+                                    self.log(f"Failed to launch website in sequence: {str(ex)}", "#ff453a")
+    
+                        elif stype == 'image':
+                            image_path = step.get('image_path', '').strip()
+                            confidence = step.get('confidence', 0.8)
+                            click_type = step.get('click_type', 'Left Click')
+                            glide_enabled = step.get('glide_enabled', True)
+                            glide_duration = step.get('glide_duration', 0.1) if glide_enabled else 0.0
+                            
+                            coords = self.locate_image_on_screen(image_path, confidence)
+                            if coords is None:
+                                self.log(f"Macro step: failed to locate image: {image_path}", "#ff453a")
+                            else:
+                                x, y = coords
+                                start_x, start_y = self.mouse_controller.position
+                                if glide_duration > 0:
+                                    steps_count = int(glide_duration * 120)
+                                    if steps_count == 0: steps_count = 1
+                                    dt = glide_duration / steps_count
+                                    for step_s in range(1, steps_count + 1):
+                                        if self.stop_current_loop:
+                                            break
+                                        t = step_s / steps_count
+                                        if t < 0.5:
+                                            ease_t = 4 * t * t * t
+                                        else:
+                                            ease_t = 1 - ((-2 * t + 2) ** 3) / 2
+                                        curr_x = start_x + (x - start_x) * ease_t
+                                        curr_y = start_y + (y - start_y) * ease_t
+                                        self.mouse_controller.position = (int(curr_x), int(curr_y))
+                                        time.sleep(dt)
+                                else:
+                                    self.mouse_controller.position = (x, y)
+                                    
+                                if self.stop_current_loop:
+                                    macro_stopped = True
+                                    break
+                                    
+                                time.sleep(0.03)
+                                
+                                if self.stop_current_loop:
+                                    macro_stopped = True
+                                    break
+                                
+                                if click_type == "Left Click":
+                                    self.mouse_controller.click(pynput_mouse.Button.left, 1)
+                                elif click_type == "Double Left Click":
+                                    self.mouse_controller.click(pynput_mouse.Button.left, 2)
+                                elif click_type == "Right Click":
+                                    self.mouse_controller.click(pynput_mouse.Button.right, 1)
+                                elif click_type == "Middle Click":
+                                    self.mouse_controller.click(pynput_mouse.Button.middle, 1)
+                                
+                                self.log(f"Macro step: located image and clicked successfully at ({x}, {y}).", self.accent_green)
+                                
+                        elif stype == 'recorded':
+                            events = step.get('events', [])
+                            skip_mouse_move = step.get('skip_mouse_move', False)
+                            if events:
+                                mode_str = " (WARP: mouse moves skipped)" if skip_mouse_move else ""
+                                self.log(f"Replaying recorded session: {len(events)} events{mode_str}...", self.accent_purple)
+                                start_time = time.time()
+                                base_offset = events[0].get('time', 0.0)
+                                
+                                for ev in events:
+                                    if self.stop_current_loop:
+                                        macro_stopped = True
+                                        break
+                                    target_time = start_time + (ev.get('time', 0.0) - base_offset)
+                                    while time.time() < target_time:
+                                        if self.stop_current_loop:
+                                            break
+                                        time.sleep(0.01)
+                                        
+                                    if self.stop_current_loop:
+                                        macro_stopped = True
+                                        break
+                                        
+                                    etype = ev.get('type')
+                                    if etype == 'mouse_move':
+                                        if skip_mouse_move:
+                                            continue
+                                        self.mouse_controller.position = (ev['x'], ev['y'])
+                                    elif etype == 'mouse_down':
+                                        self.mouse_controller.position = (ev['x'], ev['y'])
+                                        btn_name = ev.get('button', 'left')
+                                        btn = pynput_mouse.Button.left if btn_name == 'left' else (pynput_mouse.Button.right if btn_name == 'right' else pynput_mouse.Button.middle)
+                                        self.mouse_controller.press(btn)
+                                    elif etype == 'mouse_up':
+                                        self.mouse_controller.position = (ev['x'], ev['y'])
+                                        btn_name = ev.get('button', 'left')
+                                        btn = pynput_mouse.Button.left if btn_name == 'left' else (pynput_mouse.Button.right if btn_name == 'right' else pynput_mouse.Button.middle)
+                                        self.mouse_controller.release(btn)
+                                    elif etype == 'key_down':
+                                        k_val = ev.get('key')
+                                        k_obj = self.deserialize_key(k_val)
+                                        if k_obj:
+                                            try:
+                                                self.keyboard_controller.press(k_obj)
+                                            except:
+                                                pass
+                                    elif etype == 'key_up':
+                                        k_val = ev.get('key')
+                                        k_obj = self.deserialize_key(k_val)
+                                        if k_obj:
+                                            try:
+                                                self.keyboard_controller.release(k_obj)
+                                            except:
+                                                pass
+                                                
+                        time.sleep(0.02)
+                        
+                    if macro_stopped:
+                        break
+                    self.log("Macro sequence completed successfully.", self.accent_green)
                 
+                iteration += 1
+                if iteration < max_iterations:
+                    # Brief sleep between iterations, checking for stop requests
+                    for _ in range(10):
+                        if self.stop_current_loop:
+                            break
+                        time.sleep(0.01)
+                        
         except Exception as e:
             self.log(f"Sequence macro exception: {str(e)}", "#ff453a")
         finally:
+            self.current_running_slot = None
+            self.stop_current_loop = False
             self.sequence_lock.release()
 
     # --- Keyboard listener inputs routing ---
@@ -2639,6 +2776,21 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         # 3. Global hotkey trigger monitoring
         self.pressed_keys_global.add(key_name)
         
+        # Check if we should stop the currently running loop
+        if self.current_running_slot is not None:
+            curr_p, curr_r, curr_c = self.current_running_slot
+            running_slot = self.board_pages[curr_p][curr_r][curr_c]
+            
+            is_hotkey_pressed = False
+            if running_slot.get('hotkey') and running_slot['hotkey'].issubset(self.pressed_keys_global):
+                if time.time() - self.running_slot_start_time > 0.5:
+                    is_hotkey_pressed = True
+                    
+            if key_name == 'Esc' or is_hotkey_pressed:
+                self.stop_current_loop = True
+                self.log("Loop execution stop requested by hotkey.", "#ff9500")
+                return
+                
         current_time = time.time()
         # Iterate over all pages and all 32 buttons per page
         for p_idx, page in enumerate(self.board_pages):
