@@ -11,7 +11,7 @@ from pynput import mouse as pynput_mouse
 from pynput import keyboard as pynput_keyboard
 import darkdetect
 import ctypes
-from ctypes import Structure, c_ushort, c_ubyte, c_short, c_ulong, POINTER, byref
+from ctypes import Structure, c_ushort, c_ubyte, c_short, c_ulong, POINTER, byref, sizeof, c_uint, c_wchar
 
 # Define XInput structures for Xbox Controller support
 class XINPUT_GAMEPAD(Structure):
@@ -65,6 +65,51 @@ XINPUT_BUTTONS = {
     0x4000: "Controller_X",
     0x8000: "Controller_Y",
 }
+
+# Define WinMM structures for generic/PlayStation controllers
+MAXPNAMELEN = 32
+
+class JOYCAPS(Structure):
+    _fields_ = [
+        ("wMid", c_ushort),
+        ("wPid", c_ushort),
+        ("szPname", c_wchar * MAXPNAMELEN),
+        ("wXmin", c_uint),
+        ("wXmax", c_uint),
+        ("wYmin", c_uint),
+        ("wYmax", c_uint),
+        ("wZmin", c_uint),
+        ("wZmax", c_uint),
+        ("wNumButtons", c_uint),
+        ("wPeriodMin", c_uint),
+        ("wPeriodMax", c_uint),
+        ("wRmin", c_uint),
+        ("wRmax", c_uint),
+        ("wSmin", c_uint),
+        ("wSmax", c_uint),
+        ("wMaxAxes", c_uint),
+        ("wNumAxes", c_uint),
+        ("wMaxButtons", c_uint),
+        ("szRegKey", c_wchar * 32),
+        ("szOEMVxD", c_wchar * 260)
+    ]
+
+class JOYINFOEX(Structure):
+    _fields_ = [
+        ("dwSize", c_ulong),
+        ("dwFlags", c_ulong),
+        ("dwXpos", c_ulong),
+        ("dwYpos", c_ulong),
+        ("dwZpos", c_ulong),
+        ("dwRpos", c_ulong),
+        ("dwUpos", c_ulong),
+        ("dwVpos", c_ulong),
+        ("dwButtons", c_ulong),
+        ("dwButtonNumber", c_ulong),
+        ("dwPOV", c_ulong),
+        ("dwReserved1", c_ulong),
+        ("dwReserved2", c_ulong)
+    ]
 
 # Image Recognition imports
 try:
@@ -3056,41 +3101,122 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
 
     def _poll_controller(self):
         import time
+        winmm = ctypes.windll.winmm
+        
+        # Track D-pad (POV) state per joystick
+        dpad_states = {}
+        
         while True:
             time.sleep(0.015)
-            if not XInputGetState:
-                continue
-                
-            state = XINPUT_STATE()
-            res = XInputGetState(0, byref(state))
-            if res != 0:
-                if self.pressed_controller_buttons:
-                    # Release any pressed buttons on disconnect
-                    for btn in list(self.pressed_controller_buttons):
-                        self.after(0, lambda b=btn: self.global_on_release(b))
-                    self.pressed_controller_buttons.clear()
-                continue
-                
-            current_pressed = set()
-            wButtons = state.Gamepad.wButtons
-            for mask, name in XINPUT_BUTTONS.items():
-                if wButtons & mask:
-                    current_pressed.add(name)
-                    
-            if state.Gamepad.bLeftTrigger > 120:
-                current_pressed.add("Controller_LT")
-            if state.Gamepad.bRightTrigger > 120:
-                current_pressed.add("Controller_RT")
-                
-            newly_pressed = current_pressed - self.pressed_controller_buttons
-            newly_released = self.pressed_controller_buttons - current_pressed
+            current_pressed_all = set()
             
-            self.pressed_controller_buttons = current_pressed
+            # 1. Poll XInput (Xbox Controllers)
+            if XInputGetState:
+                for user_idx in range(4):
+                    state = XINPUT_STATE()
+                    res = XInputGetState(user_idx, byref(state))
+                    if res == 0:
+                        wButtons = state.Gamepad.wButtons
+                        for mask, name in XINPUT_BUTTONS.items():
+                            if wButtons & mask:
+                                current_pressed_all.add(name)
+                        if state.Gamepad.bLeftTrigger > 120:
+                            current_pressed_all.add("Controller_LT")
+                        if state.Gamepad.bRightTrigger > 120:
+                            current_pressed_all.add("Controller_RT")
+            
+            # 2. Poll WinMM (PlayStation and generic controllers)
+            num_devs = winmm.joyGetNumDevs()
+            for i in range(min(num_devs, 8)):
+                info = JOYINFOEX()
+                info.dwSize = sizeof(JOYINFOEX)
+                info.dwFlags = 0xFF # JOY_RETURNALL
+                
+                res = winmm.joyGetPosEx(i, byref(info))
+                if res == 0:
+                    caps = JOYCAPS()
+                    winmm.joyGetDevCapsW(i, byref(caps), sizeof(JOYCAPS))
+                    
+                    # Skip Microsoft / Xbox devices to let XInput handle them
+                    if caps.wMid == 1118:
+                        continue
+                        
+                    joy_name = caps.szPname if caps.szPname else "Wireless Controller"
+                    
+                    # Read buttons
+                    for btn_idx in range(caps.wNumButtons):
+                        if info.dwButtons & (1 << btn_idx):
+                            btn_label = self._get_winmm_button_label(joy_name, btn_idx)
+                            current_pressed_all.add(btn_label)
+                            
+                    # Read D-pad (POV)
+                    pov = info.dwPOV
+                    dpad_key = i
+                    old_dpads = dpad_states.get(dpad_key, set())
+                    new_dpads = set()
+                    
+                    if pov != 65535:
+                        if pov == 0 or pov == 31500 or pov == 4500:
+                            new_dpads.add("Dpad_Up")
+                        if pov == 18000 or pov == 13500 or pov == 22500:
+                            new_dpads.add("Dpad_Down")
+                        if pov == 27000 or pov == 22500 or pov == 31500:
+                            new_dpads.add("Dpad_Left")
+                        if pov == 9000 or pov == 4500 or pov == 13500:
+                            new_dpads.add("Dpad_Right")
+                            
+                    dpad_states[dpad_key] = new_dpads
+                    for dpad_dir in new_dpads:
+                        current_pressed_all.add(f"Controller_{dpad_dir}")
+            
+            # 3. Calculate transitions for ALL buttons globally
+            newly_pressed = current_pressed_all - self.pressed_controller_buttons
+            newly_released = self.pressed_controller_buttons - current_pressed_all
+            
+            self.pressed_controller_buttons = current_pressed_all
             
             for btn in newly_pressed:
                 self.after(0, lambda b=btn: self.global_on_press(b))
             for btn in newly_released:
                 self.after(0, lambda b=btn: self.global_on_release(b))
+
+    def _get_winmm_button_label(self, joy_name, btn_idx):
+        name_lower = joy_name.lower()
+        if "sony" in name_lower or "dualshock" in name_lower or "playstation" in name_lower or "wireless controller" in name_lower:
+            ps_map = {
+                0: "Square",
+                1: "Cross",
+                2: "Circle",
+                3: "Triangle",
+                4: "L1",
+                5: "R1",
+                6: "L2",
+                7: "R2",
+                8: "Share",
+                9: "Options",
+                10: "LStick_Click",
+                11: "RStick_Click",
+                12: "PS",
+                13: "Touchpad"
+            }
+            name = ps_map.get(btn_idx, f"Button_{btn_idx+1}")
+            return f"Controller_{name}"
+        else:
+            xbox_map = {
+                0: "A",
+                1: "B",
+                2: "X",
+                3: "Y",
+                4: "LB",
+                5: "RB",
+                6: "Back",
+                7: "Start",
+                8: "LStick_Click",
+                9: "RStick_Click",
+                10: "Home"
+            }
+            name = xbox_map.get(btn_idx, f"Button_{btn_idx+1}")
+            return f"Controller_{name}"
 
 if __name__ == "__main__":
     try:
