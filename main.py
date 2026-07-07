@@ -423,10 +423,16 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         )
         self.keyboard_listener.start()
 
-        # Start Xbox Controller polling thread
+        # Start Controller polling thread (unless disabled by build type)
+        exe_name = os.path.basename(sys.executable).lower()
+        self.disable_controller = "nocontroller" in exe_name
         self.pressed_controller_buttons = set()
-        self.controller_thread = threading.Thread(target=self._poll_controller, daemon=True)
-        self.controller_thread.start()
+        
+        if self.disable_controller:
+            self.log("Controller support disabled for this build.", self.accent_purple)
+        else:
+            self.controller_thread = threading.Thread(target=self._poll_controller, daemon=True)
+            self.controller_thread.start()
         
         self.log("Virtual Control Deck ready.")
         self.after(100, self.enable_drag_and_drop)
@@ -3100,6 +3106,8 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.log("Logs cleared.")
 
     def _poll_controller(self):
+        if getattr(self, "disable_controller", False):
+            return
         import time
         winmm = ctypes.windll.winmm
         
