@@ -10,6 +10,61 @@ import customtkinter as ctk
 from pynput import mouse as pynput_mouse
 from pynput import keyboard as pynput_keyboard
 import darkdetect
+import ctypes
+from ctypes import Structure, c_ushort, c_ubyte, c_short, c_ulong, POINTER, byref
+
+# Define XInput structures for Xbox Controller support
+class XINPUT_GAMEPAD(Structure):
+    _fields_ = [
+        ("wButtons", c_ushort),
+        ("bLeftTrigger", c_ubyte),
+        ("bRightTrigger", c_ubyte),
+        ("sThumbLX", c_short),
+        ("sThumbLY", c_short),
+        ("sThumbRX", c_short),
+        ("sThumbRY", c_short)
+    ]
+
+class XINPUT_STATE(Structure):
+    _fields_ = [
+        ("dwPacketNumber", c_ulong),
+        ("Gamepad", XINPUT_GAMEPAD)
+    ]
+
+# Try loading xinput DLL
+xinput_dll = None
+for dll_name in ("xinput1_4", "xinput1_3", "xinput9_1_0"):
+    try:
+        xinput_dll = ctypes.windll.LoadLibrary(dll_name)
+        break
+    except OSError:
+        continue
+
+# If dll loaded, get the state function
+if xinput_dll:
+    XInputGetState = xinput_dll.XInputGetState
+    XInputGetState.argtypes = [c_ulong, POINTER(XINPUT_STATE)]
+    XInputGetState.restype = c_ulong
+else:
+    XInputGetState = None
+
+# Controller Buttons Map
+XINPUT_BUTTONS = {
+    0x0001: "Controller_Dpad_Up",
+    0x0002: "Controller_Dpad_Down",
+    0x0004: "Controller_Dpad_Left",
+    0x0008: "Controller_Dpad_Right",
+    0x0010: "Controller_Start",
+    0x0020: "Controller_Back",
+    0x0040: "Controller_LStick_Click",
+    0x0080: "Controller_RStick_Click",
+    0x0100: "Controller_LB",
+    0x0200: "Controller_RB",
+    0x1000: "Controller_A",
+    0x2000: "Controller_B",
+    0x4000: "Controller_X",
+    0x8000: "Controller_Y",
+}
 
 # Image Recognition imports
 try:
@@ -322,6 +377,11 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
             on_release=self.global_on_release
         )
         self.keyboard_listener.start()
+
+        # Start Xbox Controller polling thread
+        self.pressed_controller_buttons = set()
+        self.controller_thread = threading.Thread(target=self._poll_controller, daemon=True)
+        self.controller_thread.start()
         
         self.log("Virtual Control Deck ready.")
         self.after(100, self.enable_drag_and_drop)
@@ -2737,7 +2797,10 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
     # --- Keyboard listener inputs routing ---
 
     def global_on_press(self, key):
-        key_name = self.normalize_key_name(key)
+        if isinstance(key, str):
+            key_name = key
+        else:
+            key_name = self.normalize_key_name(key)
         
         # 1. Macro Timeline step recording
         if self.recording_card_idx is not None:
@@ -2812,7 +2875,10 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.after(0, self.toggle_autoclicker)
 
     def global_on_release(self, key):
-        key_name = self.normalize_key_name(key)
+        if isinstance(key, str):
+            key_name = key
+        else:
+            key_name = self.normalize_key_name(key)
         
         if key_name in self.pressed_keys_global:
             self.pressed_keys_global.remove(key_name)
@@ -2987,6 +3053,44 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
         self.log("Logs cleared.")
+
+    def _poll_controller(self):
+        import time
+        while True:
+            time.sleep(0.015)
+            if not XInputGetState:
+                continue
+                
+            state = XINPUT_STATE()
+            res = XInputGetState(0, byref(state))
+            if res != 0:
+                if self.pressed_controller_buttons:
+                    # Release any pressed buttons on disconnect
+                    for btn in list(self.pressed_controller_buttons):
+                        self.after(0, lambda b=btn: self.global_on_release(b))
+                    self.pressed_controller_buttons.clear()
+                continue
+                
+            current_pressed = set()
+            wButtons = state.Gamepad.wButtons
+            for mask, name in XINPUT_BUTTONS.items():
+                if wButtons & mask:
+                    current_pressed.add(name)
+                    
+            if state.Gamepad.bLeftTrigger > 120:
+                current_pressed.add("Controller_LT")
+            if state.Gamepad.bRightTrigger > 120:
+                current_pressed.add("Controller_RT")
+                
+            newly_pressed = current_pressed - self.pressed_controller_buttons
+            newly_released = self.pressed_controller_buttons - current_pressed
+            
+            self.pressed_controller_buttons = current_pressed
+            
+            for btn in newly_pressed:
+                self.after(0, lambda b=btn: self.global_on_press(b))
+            for btn in newly_released:
+                self.after(0, lambda b=btn: self.global_on_release(b))
 
 if __name__ == "__main__":
     try:
