@@ -929,10 +929,11 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 
             if getattr(self, 'is_dragging_grid', False):
                 if not getattr(self, 'drag_visual', None):
-                    self.drag_visual = ctk.CTkToplevel(self)
+                    self.drag_visual = tk.Toplevel(self)
                     self.drag_visual.overrideredirect(True)
                     self.drag_visual.attributes("-alpha", 0.7)
                     self.drag_visual.attributes("-topmost", True)
+                    self.drag_visual.configure(bg="#181c24")
                     
                     slot = self.board_slots[self.drag_src_row][self.drag_src_col]
                     border_c = self.get_slot_border_color(slot['type'])
@@ -967,8 +968,8 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     )
                     lbl.pack(expand=True, padx=4, pady=4)
                     
-                vx = event.x_root - 37
-                vy = event.y_root - 37
+                vx = event.x_root + 15
+                vy = event.y_root + 15
                 self.drag_visual.geometry(f"74x74+{vx}+{vy}")
 
     def end_grid_drag(self, event):
