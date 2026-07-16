@@ -455,6 +455,8 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                                 for c in range(8):
                                     slot = page_data[r][c]
                                     slot['hotkey'] = set(slot['hotkey'])
+                                    if 'enabled' not in slot:
+                                        slot['enabled'] = True
                                     if 'steps' not in slot:
                                         slot['steps'] = []
                                     row_data.append(slot)
@@ -469,6 +471,8 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                             for c in range(8):
                                 slot = data[r][c]
                                 slot['hotkey'] = set(slot['hotkey'])
+                                if 'enabled' not in slot:
+                                    slot['enabled'] = True
                                 if 'steps' not in slot:
                                     slot['steps'] = []
                                 row_data.append(slot)
@@ -499,6 +503,7 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     'type': 'empty',
                     'title': '',
                     'hotkey': set(),
+                    'enabled': True,
                     'app_path': '',
                     'web_url': '',
                     'mouse_x': 1000,
@@ -908,6 +913,7 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.drag_start_x = event.x_root
         self.drag_start_y = event.y_root
         self.is_dragging_grid = False
+        self.drag_visual = None
 
     def grid_drag_motion(self, event):
         if not hasattr(self, 'drag_start_x'):
@@ -920,9 +926,57 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 self.is_dragging_grid = True
                 self.config(cursor="hand2")
                 self.log(f"Dragging grid slot: Row {self.drag_src_row + 1} Col {self.drag_src_col + 1}...")
+                
+            if getattr(self, 'is_dragging_grid', False):
+                if not getattr(self, 'drag_visual', None):
+                    self.drag_visual = ctk.CTkToplevel(self)
+                    self.drag_visual.overrideredirect(True)
+                    self.drag_visual.attributes("-alpha", 0.7)
+                    self.drag_visual.attributes("-topmost", True)
+                    
+                    slot = self.board_slots[self.drag_src_row][self.drag_src_col]
+                    border_c = self.get_slot_border_color(slot['type'])
+                    
+                    frame = ctk.CTkFrame(
+                        self.drag_visual,
+                        width=74,
+                        height=74,
+                        corner_radius=14,
+                        fg_color="#181c24",
+                        border_color=border_c,
+                        border_width=2
+                    )
+                    frame.pack()
+                    frame.pack_propagate(False)
+                    
+                    label_text = slot['title'] if slot['title'] else (slot['type'].upper() if slot['type'] != 'empty' else "")
+                    is_enabled = slot.get('enabled', True)
+                    if not is_enabled:
+                        label_text = f"[OFF] {label_text}" if label_text else "[OFF]"
+                        frame.configure(border_color="#484f58")
+                        text_color = "#8b949e"
+                    else:
+                        text_color = "#ffffff"
+                        
+                    lbl = ctk.CTkLabel(
+                        frame,
+                        text=label_text,
+                        text_color=text_color,
+                        font=("Helvetica", 9, "bold"),
+                        fg_color="transparent"
+                    )
+                    lbl.pack(expand=True, padx=4, pady=4)
+                    
+                vx = event.x_root - 37
+                vy = event.y_root - 37
+                self.drag_visual.geometry(f"74x74+{vx}+{vy}")
 
     def end_grid_drag(self, event):
         self.config(cursor="")
+        if hasattr(self, 'drag_visual') and self.drag_visual:
+            self.drag_visual.destroy()
+            self.drag_visual = None
+            
         if not getattr(self, 'is_dragging_grid', False):
             # Regular click selection
             self.on_grid_button_clicked(self.drag_src_row, self.drag_src_col)
@@ -1115,6 +1169,13 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.inspector_title_entry = ctk.CTkEntry(header, width=120, height=26, fg_color="#0a0c10", border_color="#30363d", text_color=self.text_white)
         self.inspector_title_entry.pack(side="left", padx=(0, 15))
         self.inspector_title_entry.bind("<KeyRelease>", lambda event: self.save_current_inspector_data())
+
+        # Active Toggle Switch
+        self.inspector_enabled_switch = ctk.CTkSwitch(
+            header, text="Active", text_color=self.text_white, font=("Helvetica", 11, "bold"),
+            progress_color=self.accent_green, command=self.on_inspector_enabled_toggled, width=70
+        )
+        self.inspector_enabled_switch.pack(side="left", padx=(0, 15))
 
         # Type Selector Dropdown
         type_lbl = ctk.CTkLabel(header, text="Type:", text_color=self.text_gray, font=("Helvetica", 11))
@@ -1398,7 +1459,17 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                     border_c = self.accent_cyan
                 
                 text_val = slot['title'] if slot['title'] else (slot['type'].upper() if slot['type'] != 'empty' else "")
-                self.grid_buttons[r][c].configure(text=text_val, border_color=border_c)
+                is_enabled = slot.get('enabled', True)
+                
+                if not is_enabled:
+                    text_val = f"[OFF] {text_val}" if text_val else "[OFF]"
+                    if not (r == self.selected_row and c == self.selected_col):
+                        border_c = "#484f58"
+                    text_c = "#8b949e"
+                else:
+                    text_c = "#ffffff"
+                
+                self.grid_buttons[r][c].configure(text=text_val, border_color=border_c, text_color=text_c)
 
     def on_grid_button_clicked(self, r, c):
         old_r, old_c = self.selected_row, self.selected_col
@@ -1467,6 +1538,13 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.inspector_title_entry.delete(0, "end")
         self.inspector_title_entry.insert(0, slot['title'])
         self.inspector_type_combo.set(self.format_type_name(slot['type']))
+        
+        # Load enabled state
+        is_enabled = slot.get('enabled', True)
+        if is_enabled:
+            self.inspector_enabled_switch.select()
+        else:
+            self.inspector_enabled_switch.deselect()
         
         hk_combo = " + ".join(sorted(list(slot['hotkey']))) if slot['hotkey'] else "None"
         self.inspector_hotkey_display.configure(text=hk_combo)
@@ -1573,6 +1651,9 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.load_slot_to_inspector(r, c)
         self.save_current_inspector_data()
 
+    def on_inspector_enabled_toggled(self):
+        self.save_current_inspector_data()
+
     def on_inspector_loop_switch_toggled(self):
         if self.inspector_loop_switch.get() == 1:
             self.inspector_loop_count_entry.configure(state="normal")
@@ -1590,6 +1671,7 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         # Header properties
         slot['title'] = self.inspector_title_entry.get().strip()
         slot['type'] = self.parse_type_name(self.inspector_type_combo.get())
+        slot['enabled'] = self.inspector_enabled_switch.get() == 1
         slot['loop_enabled'] = self.inspector_loop_switch.get() == 1
         try:
             slot['loop_count'] = int(self.inspector_loop_count_entry.get().strip())
@@ -1598,8 +1680,17 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         
         # Grid button label updates
         grid_text = slot['title'] if slot['title'] else (slot['type'].upper() if slot['type'] != 'empty' else "")
-        self.grid_buttons[r][c].configure(text=grid_text)
-        self.grid_buttons[r][c].configure(border_color=self.get_slot_border_color(slot['type']) if (r != self.selected_row or c != self.selected_col) else self.accent_cyan)
+        is_enabled = slot.get('enabled', True)
+        
+        if not is_enabled:
+            grid_text = f"[OFF] {grid_text}" if grid_text else "[OFF]"
+            border_c = "#484f58" if (r != self.selected_row or c != self.selected_col) else self.accent_cyan
+            text_c = "#8b949e"
+        else:
+            border_c = self.get_slot_border_color(slot['type']) if (r != self.selected_row or c != self.selected_col) else self.accent_cyan
+            text_c = "#ffffff"
+            
+        self.grid_buttons[r][c].configure(text=grid_text, border_color=border_c, text_color=text_c)
 
         # Config properties
         if slot['type'] == 'app':
@@ -2911,7 +3002,7 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
             for r in range(4):
                 for c in range(8):
                     slot = page[r][c]
-                    if slot['type'] != 'empty' and slot['hotkey']:
+                    if slot['type'] != 'empty' and slot['hotkey'] and slot.get('enabled', True):
                         if slot['hotkey'].issubset(self.pressed_keys_global):
                             # Debounce 400ms per trigger event
                             if current_time - self.last_triggered_time > 0.4:

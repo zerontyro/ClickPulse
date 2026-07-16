@@ -1,24 +1,26 @@
-# ClickPulse V2
+# ClickPulse V3
 
 ClickPulse is a premium automation utility for macro sequencing, hotkey mapping, image recognition triggers, and input emulation on Windows.
 
 ## Key Features
 - **Control Deck & Pages:** 3 pages of action grids to trigger recorded workflows.
 - **Sequence Timeline Editor:** Build sequences of mouse clicks, drags, keyboard hotkeys, and delays.
+- **Interactive Drag & Drop:** Easily re-order steps in the timeline editor.
+- **Live Drag-and-Drop Feedback [NEW in V3]:** Dragging a grid slot shows a semi-transparent replica of the macro button tracking the mouse cursor in real-time, matching its title, type, and status.
+- **Macro Active Switch [NEW in V3]:** Toggle each macro on or off instantly using the "Active" toggle switch in the Property Inspector. Disabled macros dim on the grid (displaying `[OFF]`) and will not trigger via hotkeys.
 - **Advanced Loop Control:** Repeat sequences infinitely or for a set number of loops. Interrupt loops instantly by holding the trigger hotkey.
 - **Image Recognition:** Set slots to only execute when a matching image appears on the screen (configurable confidence levels).
 - **Universal Gamepad Hotkey Support:** Bind game controller buttons to trigger any slot.
   - **Xbox Wireless Controllers:** Full integration with native XInput.
   - **PS4 DualShock 4 Controllers:** Native support with mapped labels (`Cross`, `Circle`, `Square`, `Triangle`, `L1`, `R1`, `L2`, `R2`, `Share`, `Options`, `PS`, `Touchpad`).
-- **Drag & Drop:** Easily re-order steps in the timeline editor.
 
 ---
 
 ## Executable Versions Available (in `dist/`)
 
-1. **`ClickpulseV2.exe`:**
+1. **`ClickpulseV3.exe`:**
    - The full build including active background controller polling (Xbox & PS4).
-2. **`ClickpulseV2_NoController.exe`:**
+2. **`ClickpulseV3_NoController.exe`:**
    - A lightweight version that bypasses gamepad polling loops entirely, saving CPU cycles if you only use keyboard & mouse.
 
 ---
