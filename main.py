@@ -355,7 +355,12 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         # Configure Main Window
         self.title("ClickPulse - Virtual Control Deck")
         self.geometry("1020x860")
-        self.resizable(False, False)
+        self.resizable(True, True)
+        self.state("zoomed")
+        
+        # Bind F11 for fullscreen toggle
+        self.is_fullscreen = False
+        self.bind("<F11>", self.toggle_fullscreen)
         
         # Style Constants
         self.bg_color = "#0a0c10"
@@ -422,6 +427,9 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
             on_release=self.global_on_release
         )
         self.keyboard_listener.start()
+
+        # Master macro activation state
+        self.master_macros_enabled = True
 
         # Start Controller polling thread (unless disabled by build type)
         exe_name = os.path.basename(sys.executable).lower()
@@ -558,6 +566,14 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.page_controls_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
         self.page_controls_frame.pack(side="right")
         
+        # Master macro activation switch
+        self.master_macro_switch = ctk.CTkSwitch(
+            header_frame, text="All Hotkeys Active", text_color=self.text_white, font=("Helvetica", 11, "bold"),
+            progress_color=self.accent_cyan, command=self.on_master_macro_switch_toggled, width=120
+        )
+        self.master_macro_switch.select()
+        self.master_macro_switch.pack(side="right", padx=(0, 20))
+        
         self.btn_prev_page = ctk.CTkButton(
             self.page_controls_frame, text="◀", fg_color="#1c212e", hover_color="#2b3240", border_color="#30363d", border_width=1,
             text_color=self.accent_cyan, font=("Helvetica", 12, "bold"), width=30, height=26, corner_radius=6,
@@ -682,14 +698,14 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         # Interval slider
         ac_int_row = ctk.CTkFrame(ac_frame, fg_color="transparent")
         ac_int_row.pack(fill="x", padx=8, pady=(0, 2))
-        self.ac_interval_lbl = ctk.CTkLabel(ac_int_row, text="Interval: 1.00s", font=("Helvetica", 9), text_color=self.text_gray)
+        self.ac_interval_lbl = ctk.CTkLabel(ac_int_row, text="Interval: 0.100s", font=("Helvetica", 9), text_color=self.text_gray)
         self.ac_interval_lbl.pack(side="left")
         self.ac_interval_slider = ctk.CTkSlider(
-            ac_frame, from_=0.05, to=5.0, number_of_steps=99,
+            ac_frame, from_=0.001, to=2.0, number_of_steps=1999,
             progress_color=self.accent_green, button_color=self.accent_green, button_hover_color="#00cc6a",
-            height=12, command=lambda v: self.ac_interval_lbl.configure(text=f"Interval: {v:.2f}s")
+            height=12, command=lambda v: self.ac_interval_lbl.configure(text=f"Interval: {v:.3f}s")
         )
-        self.ac_interval_slider.set(1.0)
+        self.ac_interval_slider.set(0.1)
         self.ac_interval_slider.pack(fill="x", padx=8, pady=(0, 6))
 
         # Duration entry
@@ -1651,6 +1667,17 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
         # Dynamically switch inspector panels
         self.load_slot_to_inspector(r, c)
         self.save_current_inspector_data()
+
+    def on_master_macro_switch_toggled(self):
+        self.master_macros_enabled = self.master_macro_switch.get() == 1
+        if self.master_macros_enabled:
+            self.log("Global Hotkey Triggers: ENABLED", self.accent_green)
+        else:
+            self.log("Global Hotkey Triggers: DISABLED", "#ff9500")
+
+    def toggle_fullscreen(self, event=None):
+        self.is_fullscreen = not self.is_fullscreen
+        self.attributes("-fullscreen", self.is_fullscreen)
 
     def on_inspector_enabled_toggled(self):
         self.save_current_inspector_data()
@@ -2998,18 +3025,19 @@ class ClickPulseApp(ctk.CTk, TkinterDnD.DnDWrapper):
                 return
                 
         current_time = time.time()
-        # Iterate over all pages and all 32 buttons per page
-        for p_idx, page in enumerate(self.board_pages):
-            for r in range(4):
-                for c in range(8):
-                    slot = page[r][c]
-                    if slot['type'] != 'empty' and slot['hotkey'] and slot.get('enabled', True):
-                        if slot['hotkey'].issubset(self.pressed_keys_global):
-                            # Debounce 400ms per trigger event
-                            if current_time - self.last_triggered_time > 0.4:
-                                self.last_triggered_time = current_time
-                                self.log(f"Global Hotkey Triggered for Slot P{p_idx+1} ({r+1}, {c+1}): {' + '.join(sorted(list(slot['hotkey'])))}", self.accent_purple)
-                                self.execute_slot_action_async(r, c, p_idx)
+        if getattr(self, "master_macros_enabled", True):
+            # Iterate over all pages and all 32 buttons per page
+            for p_idx, page in enumerate(self.board_pages):
+                for r in range(4):
+                    for c in range(8):
+                        slot = page[r][c]
+                        if slot['type'] != 'empty' and slot['hotkey'] and slot.get('enabled', True):
+                            if slot['hotkey'].issubset(self.pressed_keys_global):
+                                # Debounce 400ms per trigger event
+                                if current_time - self.last_triggered_time > 0.4:
+                                    self.last_triggered_time = current_time
+                                    self.log(f"Global Hotkey Triggered for Slot P{p_idx+1} ({r+1}, {c+1}): {' + '.join(sorted(list(slot['hotkey'])))}", self.accent_purple)
+                                    self.execute_slot_action_async(r, c, p_idx)
 
         # AutoClicker global hotkey check
         if self.autoclicker_hotkey and self.autoclicker_hotkey.issubset(self.pressed_keys_global):

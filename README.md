@@ -1,4 +1,4 @@
-# ClickPulse V3
+# ClickPulse V4
 
 ClickPulse is a premium automation utility for macro sequencing, hotkey mapping, image recognition triggers, and input emulation on Windows.
 
@@ -6,8 +6,11 @@ ClickPulse is a premium automation utility for macro sequencing, hotkey mapping,
 - **Control Deck & Pages:** 3 pages of action grids to trigger recorded workflows.
 - **Sequence Timeline Editor:** Build sequences of mouse clicks, drags, keyboard hotkeys, and delays.
 - **Interactive Drag & Drop:** Easily re-order steps in the timeline editor.
-- **Live Drag-and-Drop Feedback [NEW in V3]:** Dragging a grid slot shows a semi-transparent replica of the macro button tracking the mouse cursor in real-time, matching its title, type, and status.
-- **Macro Active Switch [NEW in V3]:** Toggle each macro on or off instantly using the "Active" toggle switch in the Property Inspector. Disabled macros dim on the grid (displaying `[OFF]`) and will not trigger via hotkeys.
+- **Resizable & Fullscreen Modes [NEW in V4]:** The window is now resizable and starts in a maximized state. Press **`F11`** to toggle borderless fullscreen mode.
+- **Master Hotkey Switch [NEW in V4]:** Added an **`All Hotkeys Active`** switch to the top header. Toggle it off to temporarily disable all global hotkeys from triggering macros.
+- **High-Speed AutoClicker [NEW in V4]:** The autoclicker speed range has been boosted down to **`0.001s`** (1 millisecond) with millisecond-precision slider labels.
+- **Live Drag-and-Drop Feedback:** Dragging a grid slot shows a semi-transparent replica of the macro button tracking the mouse cursor in real-time, matching its title, type, and status.
+- **Macro Active Switch:** Toggle each macro on or off instantly using the "Active" toggle switch in the Property Inspector. Disabled macros dim on the grid (displaying `[OFF]`) and will not trigger via hotkeys.
 - **Advanced Loop Control:** Repeat sequences infinitely or for a set number of loops. Interrupt loops instantly by holding the trigger hotkey.
 - **Image Recognition:** Set slots to only execute when a matching image appears on the screen (configurable confidence levels).
 - **Universal Gamepad Hotkey Support:** Bind game controller buttons to trigger any slot.
@@ -18,9 +21,9 @@ ClickPulse is a premium automation utility for macro sequencing, hotkey mapping,
 
 ## Executable Versions Available (in `dist/`)
 
-1. **`ClickpulseV3.exe`:**
+1. **`ClickpulseV4.exe`:**
    - The full build including active background controller polling (Xbox & PS4).
-2. **`ClickpulseV3_NoController.exe`:**
+2. **`ClickpulseV4_NoController.exe`:**
    - A lightweight version that bypasses gamepad polling loops entirely, saving CPU cycles if you only use keyboard & mouse.
 
 ---
